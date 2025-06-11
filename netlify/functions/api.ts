@@ -22,11 +22,11 @@ const kafka = new Kafka({
   brokers: [process.env.REDPANDA_BROKERS || ''],
   clientId: process.env.REDPANDA_CLIENT_ID,
   ssl: true,
-  sasl: {
+  sasl: process.env.REDPANDA_USERNAME && process.env.REDPANDA_PASSWORD ? {
     mechanism: 'scram-sha-256',
-    username: process.env.REDPANDA_USERNAME || '',
-    password: process.env.REDPANDA_PASSWORD || ''
-  }
+    username: process.env.REDPANDA_USERNAME,
+    password: process.env.REDPANDA_PASSWORD
+  } : undefined
 });
 
 const producer = kafka.producer();
