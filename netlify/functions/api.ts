@@ -123,11 +123,21 @@ export const handler: Handler = async (event) => {
     };
   } catch (error) {
     console.error('Error processing event:', error);
+    console.error('Error details:', {
+      brokers: process.env.REDPANDA_BROKERS,
+      username: process.env.REDPANDA_USERNAME ? 'set' : 'not set',
+      password: process.env.REDPANDA_PASSWORD ? 'set' : 'not set',
+      firebase: {
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL ? 'set' : 'not set',
+        privateKey: process.env.FIREBASE_PRIVATE_KEY ? 'set' : 'not set'
+      }
+    });
     return {
       statusCode: 500,
       body: JSON.stringify({
         success: false,
-        error: 'Failed to process event'
+        error: error instanceof Error ? error.message : 'Failed to process event'
       })
     };
   }
