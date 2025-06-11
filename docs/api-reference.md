@@ -6,7 +6,7 @@
 
 Send game events to the BrightMatter platform.
 
-**Endpoint:** `https://api.boredgamer.com/events`
+**Production Endpoint:** `https://api.brightmatter.io/events`
 
 **Development Endpoint:** `http://localhost:3001/events`
 
