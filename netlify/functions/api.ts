@@ -108,9 +108,9 @@ export const handler: Handler = async (event) => {
     console.log('Connected to Redpanda');
 
     // Send event to Redpanda
-    console.log('Sending event to topic: game-events');
+    console.log('Sending event to topic: game.events.raw');
     await producer.send({
-      topic: 'game-events',
+      topic: 'game.events.raw',
       messages: [{
         key: body.gameId,
         value: JSON.stringify(brightMatterEvent)
