@@ -19,14 +19,14 @@ try {
 
 // Initialize Redpanda client
 const kafka = new Kafka({
-  brokers: (process.env.REDPANDA_BROKERS || '').split(','),
-  clientId: process.env.REDPANDA_CLIENT_ID || 'brightmatter',
-  sasl: process.env.REDPANDA_USERNAME && process.env.REDPANDA_PASSWORD ? {
+  brokers: [process.env.REDPANDA_BROKERS || ''],
+  clientId: process.env.REDPANDA_CLIENT_ID,
+  ssl: true,
+  sasl: {
     mechanism: 'scram-sha-256',
-    username: process.env.REDPANDA_USERNAME,
-    password: process.env.REDPANDA_PASSWORD
-  } : undefined,
-  ssl: true
+    username: process.env.REDPANDA_USERNAME || '',
+    password: process.env.REDPANDA_PASSWORD || ''
+  }
 });
 
 const producer = kafka.producer();
@@ -96,10 +96,19 @@ export const handler: Handler = async (event) => {
       }
     };
 
+    console.log('Connecting to Redpanda with config:', {
+      brokers: process.env.REDPANDA_BROKERS,
+      clientId: process.env.REDPANDA_CLIENT_ID,
+      username: process.env.REDPANDA_USERNAME ? 'set' : 'not set',
+      password: process.env.REDPANDA_PASSWORD ? 'set' : 'not set'
+    });
+
     // Connect to Redpanda
     await producer.connect();
+    console.log('Connected to Redpanda');
 
     // Send event to Redpanda
+    console.log('Sending event to topic: game-events');
     await producer.send({
       topic: 'game-events',
       messages: [{
