@@ -2,8 +2,11 @@ import { Handler } from '@netlify/functions';
 import * as admin from 'firebase-admin';
 
 // Initialize Firebase Admin
-if (!admin.apps.length) {
-  admin.initializeApp({
+let app: admin.app.App;
+try {
+  app = admin.app();
+} catch {
+  app = admin.initializeApp({
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
