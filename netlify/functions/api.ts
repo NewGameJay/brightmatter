@@ -1,5 +1,7 @@
 import { Handler } from '@netlify/functions';
 import * as admin from 'firebase-admin';
+import { Kafka } from 'kafkajs';
+import { v4 as uuidv4 } from 'uuid';
 
 // Initialize Firebase Admin
 let app: admin.app.App;
@@ -14,6 +16,19 @@ try {
     })
   });
 }
+
+// Initialize Redpanda client
+const kafka = new Kafka({
+  brokers: (process.env.REDPANDA_BROKERS || '').split(','),
+  sasl: {
+    mechanism: 'scram-sha-256',
+    username: process.env.REDPANDA_USERNAME || '',
+    password: process.env.REDPANDA_PASSWORD || ''
+  },
+  ssl: true
+});
+
+const producer = kafka.producer();
 
 export const handler: Handler = async (event) => {
   // Only allow POST requests
@@ -45,7 +60,7 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    // Verify API key and game ID
+    // Verify API key and game ID using Firebase
     const studio = await admin.firestore()
       .collection('studios')
       .where('apiKey', '==', apiKey)
@@ -60,21 +75,47 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    // Store event in Firestore
-    const eventRef = await admin.firestore()
-      .collection('events')
-      .add({
-        ...body,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        studioId: studio.docs[0].id
-      });
+    // Generate event ID
+    const eventId = uuidv4();
+
+    // Transform event for BrightMatter format
+    const brightMatterEvent = {
+      id: eventId,
+      gameId: body.gameId,
+      studioId: studio.docs[0].id,
+      type: body.type,
+      playerId: body.data.playerId || 'anonymous',
+      playerName: body.data.playerName || 'Anonymous Player',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        ...body.data,
+        platform: body.data.platform || 'unknown',
+        sdkVersion: body.data.sdkVersion || '1.0.0',
+        apiVersion: 'v1'
+      }
+    };
+
+    // Connect to Redpanda
+    await producer.connect();
+
+    // Send event to Redpanda
+    await producer.send({
+      topic: 'game-events',
+      messages: [{
+        key: body.gameId,
+        value: JSON.stringify(brightMatterEvent)
+      }]
+    });
+
+    // Disconnect from Redpanda
+    await producer.disconnect();
 
     return {
       statusCode: 200,
       body: JSON.stringify({
         success: true,
         event: {
-          id: eventRef.id,
+          id: eventId,
           type: body.type,
           gameId: body.gameId
         }
