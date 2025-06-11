@@ -6,9 +6,7 @@
 
 Send game events to the BrightMatter platform.
 
-**Production Endpoint:** `https://api.brightmatter.io/events`
-
-**Development Endpoint:** `http://localhost:3001/events`
+**Endpoint:** `https://api.brightmatter.io/events`
 
 **Headers:**
 ```http
