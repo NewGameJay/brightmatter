@@ -20,17 +20,13 @@ try {
 // Initialize Redpanda client
 const kafka = new Kafka({
   brokers: (process.env.REDPANDA_BROKERS || '').split(','),
-  clientId: process.env.REDPANDA_CLIENT_ID || 'brightmatter-api',
-  ssl: true,
-  sasl: {
+  clientId: process.env.REDPANDA_CLIENT_ID || 'brightmatter',
+  sasl: process.env.REDPANDA_USERNAME && process.env.REDPANDA_PASSWORD ? {
     mechanism: 'scram-sha-256',
-    username: process.env.REDPANDA_USERNAME || '',
-    password: process.env.REDPANDA_PASSWORD || ''
-  },
-  retry: {
-    initialRetryTime: 100,
-    retries: 3
-  }
+    username: process.env.REDPANDA_USERNAME,
+    password: process.env.REDPANDA_PASSWORD
+  } : undefined,
+  ssl: true
 });
 
 const producer = kafka.producer();
@@ -105,7 +101,7 @@ export const handler: Handler = async (event) => {
 
     // Send event to Redpanda
     await producer.send({
-      topic: 'brightmatter.game.events',
+      topic: 'game-events',
       messages: [{
         key: body.gameId,
         value: JSON.stringify(brightMatterEvent)
