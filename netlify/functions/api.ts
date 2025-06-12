@@ -259,40 +259,69 @@ const handleLeaderboards = async (event: any) => {
           };
         }
 
-      case 'POST':
-        // Create new leaderboard
-        const config: LeaderboardConfig = JSON.parse(event.body);
-        console.log('Creating leaderboard:', config.name, 'for game:', gameId);
-        const result = await executeQuery(
-          `INSERT INTO leaderboards (
-            game_id, name, event_type, score_field, score_type,
-            score_formula, time_period, start_date, end_date,
-            is_rolling, max_entries_per_user, highest_scores_per_user,
-            required_metadata
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-          RETURNING *`,
-          [
-            gameId,
-            config.name,
-            config.eventType,
-            config.scoreField,
-            config.scoreType,
-            config.scoreFormula,
-            config.timePeriod,
-            config.startDate,
-            config.endDate,
-            config.isRolling,
-            config.maxEntriesPerUser,
-            config.highestScoresPerUser,
-            JSON.stringify(config.requiredMetadata)
-          ]
-        );
-        console.log('Created leaderboard with ID:', result.rows[0].id);
+      case 'POST': {
+        // Parse request body
+        const body = JSON.parse(event.body || '{}');
+
+        // Generate leaderboard ID
+        const leaderboardId = uuidv4();
+
+        // Transform leaderboard config for BrightMatter format
+        const brightMatterEvent = {
+          id: leaderboardId,
+          gameId,
+          studioId: studio.docs[0].id,
+          type: 'leaderboard.create',
+          timestamp: new Date().toISOString(),
+          config: {
+            name: body.name,
+            eventType: body.eventType,
+            scoreField: body.scoreField,
+            scoreType: body.scoreType,
+            scoreFormula: body.scoreFormula,
+            timePeriod: body.timePeriod,
+            startDate: body.startDate,
+            endDate: body.endDate,
+            isRolling: body.isRolling,
+            maxEntriesPerUser: body.maxEntriesPerUser,
+            highestScoresPerUser: body.highestScoresPerUser,
+            requiredMetadata: body.requiredMetadata || []
+          }
+        };
+
+        console.log('Connecting to Redpanda with config:', {
+          brokers: process.env.REDPANDA_BROKERS,
+          clientId: process.env.REDPANDA_CLIENT_ID,
+          username: process.env.REDPANDA_USERNAME ? 'set' : 'not set',
+          password: process.env.REDPANDA_PASSWORD ? 'set' : 'not set'
+        });
+
+        // Connect to Redpanda
+        await producer.connect();
+        console.log('Connected to Redpanda');
+
+        // Send leaderboard creation event to Redpanda
+        console.log('Sending leaderboard creation event to topic: leaderboard.events');
+        await producer.send({
+          topic: 'leaderboard.events',
+          messages: [{
+            key: gameId,
+            value: JSON.stringify(brightMatterEvent)
+          }]
+        });
+
+        // Disconnect from Redpanda
+        await producer.disconnect();
 
         return {
-          statusCode: 201,
-          body: JSON.stringify(result.rows[0])
+          statusCode: 202,
+          body: JSON.stringify({
+            id: leaderboardId,
+            status: 'processing',
+            message: 'Leaderboard creation event sent successfully'
+          })
         };
+      }
 
       default:
         return {
