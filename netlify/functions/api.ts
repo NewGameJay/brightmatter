@@ -33,8 +33,27 @@ const pool = new Pool({
   database: process.env.POSTGRES_DB,
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
-  ssl: true
+  ssl: true,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 10000,
+  max: 20
 });
+
+// Add error handler to the pool
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle PostgreSQL client', err);
+});
+
+// Function to safely execute database queries
+async function executeQuery(queryText: string, values: any[] = []) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(queryText, values);
+    return result;
+  } finally {
+    client.release();
+  }
+}
 
 // Leaderboard types
 type LeaderboardConfig = {
@@ -100,10 +119,12 @@ const getEventTypes = async (event: any) => {
     }
 
     // Query distinct event types from game_events table
-    const result = await pool.query(
+    console.log('Querying event types for game:', studio.docs[0].id);
+    const result = await executeQuery(
       'SELECT DISTINCT event_type, jsonb_object_keys(payload) as field FROM game_events WHERE game_id = $1',
       [studio.docs[0].id]
     );
+    console.log('Found event types:', result.rows);
 
     return {
       statusCode: 200,
@@ -153,7 +174,8 @@ const handleLeaderboards = async (event: any) => {
         const leaderboardId = event.queryStringParameters?.id;
         if (leaderboardId) {
           // Get specific leaderboard with entries
-          const result = await pool.query(
+          console.log('Fetching leaderboard:', leaderboardId, 'for game:', gameId);
+          const result = await executeQuery(
             `SELECT l.*, 
                     json_agg(json_build_object(
                       'rank', le.rank,
@@ -169,6 +191,7 @@ const handleLeaderboards = async (event: any) => {
              GROUP BY l.id`,
             [leaderboardId, gameId]
           );
+          console.log('Found leaderboard:', result.rows[0] ? 'yes' : 'no');
 
           return {
             statusCode: 200,
@@ -176,10 +199,12 @@ const handleLeaderboards = async (event: any) => {
           };
         } else {
           // List all leaderboards for the game
-          const result = await pool.query(
+          console.log('Listing leaderboards for game:', gameId);
+          const result = await executeQuery(
             'SELECT * FROM leaderboards WHERE game_id = $1',
             [gameId]
           );
+          console.log('Found', result.rows.length, 'leaderboards');
 
           return {
             statusCode: 200,
@@ -190,7 +215,8 @@ const handleLeaderboards = async (event: any) => {
       case 'POST':
         // Create new leaderboard
         const config: LeaderboardConfig = JSON.parse(event.body);
-        const result = await pool.query(
+        console.log('Creating leaderboard:', config.name, 'for game:', gameId);
+        const result = await executeQuery(
           `INSERT INTO leaderboards (
             game_id, name, event_type, score_field, score_type,
             score_formula, time_period, start_date, end_date,
@@ -214,6 +240,7 @@ const handleLeaderboards = async (event: any) => {
             JSON.stringify(config.requiredMetadata)
           ]
         );
+        console.log('Created leaderboard with ID:', result.rows[0].id);
 
         return {
           statusCode: 201,
