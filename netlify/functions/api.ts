@@ -1,5 +1,5 @@
 import { Handler } from '@netlify/functions';
-import { Kafka } from 'kafkajs';
+import { Kafka, Partitioners } from 'kafkajs';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import { Pool } from 'pg';
@@ -118,7 +118,23 @@ const kafka = new Kafka({
   } : undefined
 });
 
+// Configure producer with auto topic creation
 const producer = kafka.producer();
+
+// Add error handler to producer
+producer.on('producer.connect', () => {
+  console.log('Producer connected to Redpanda');
+});
+
+producer.on('producer.disconnect', () => {
+  console.log('Producer disconnected from Redpanda');
+});
+
+producer.on('producer.network.request_timeout', (error) => {
+  console.error('Producer network timeout:', error);
+});
+
+
 
 // Get available event types for leaderboards
 const getEventTypes = async (event: any) => {

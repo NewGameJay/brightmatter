@@ -1,0 +1,9 @@
+kafka_api:
+  brokers:
+    - d12s0600ht3usuv2rgug.any.us-east-1.mpx.prd.cloud.redpanda.com:9092
+  sasl:
+    mechanism: SCRAM-SHA-256
+    username: brightmatter
+    password: QDPVxw9s5NCSdIlc9SX6z9i3CXJRQV
+  tls:
+    enabled: true
