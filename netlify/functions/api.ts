@@ -44,15 +44,38 @@ pool.on('error', (err) => {
   console.error('Unexpected error on idle PostgreSQL client', err);
 });
 
-// Function to safely execute database queries
-async function executeQuery(queryText: string, values: any[] = []) {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(queryText, values);
-    return result;
-  } finally {
-    client.release();
+// Function to safely execute database queries with retries
+async function executeQuery(queryText: string, values: any[] = [], maxRetries = 3) {
+  let lastError: Error | unknown;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`PostgreSQL connection attempt ${attempt}/${maxRetries}...`);
+      const client = await Promise.race([
+        pool.connect(),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Connection timeout')), 5000)
+        )
+      ]) as import('pg').PoolClient;
+
+      try {
+        console.log('Connected to PostgreSQL, executing query...');
+        const result = await client.query(queryText, values);
+        console.log('Query executed successfully');
+        return result;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error(`PostgreSQL attempt ${attempt} failed:`, error);
+      lastError = error;
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
   }
+  throw lastError;
 }
 
 // Leaderboard types
