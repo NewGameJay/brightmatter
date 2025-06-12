@@ -153,19 +153,32 @@ const handleLeaderboards = async (event: any) => {
 
   try {
     // Get game ID from Firebase
-    const studio = await admin.firestore()
+    console.log('Starting Firebase authentication for leaderboard operation...');
+    console.log('API Key:', apiKey ? 'provided' : 'missing');
+    console.log('Firebase config:', {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ? 'set' : 'not set',
+      privateKey: process.env.FIREBASE_PRIVATE_KEY ? 'set' : 'not set'
+    });
+
+    const studioQuery = admin.firestore()
       .collection('studios')
       .where('apiKey', '==', apiKey)
-      .limit(1)
-      .get();
+      .limit(1);
+
+    console.log('Executing Firebase query for leaderboard...');
+    const studio = await studioQuery.get();
+    console.log('Firebase query complete. Empty?', studio.empty);
 
     if (studio.empty) {
+      console.log('No studio found with provided API key');
       return {
         statusCode: 401,
         body: JSON.stringify({ error: 'Invalid API key' })
       };
     }
-
+    
+    console.log('Studio found, proceeding with leaderboard request');
     const gameId = studio.docs[0].id;
 
     switch (event.httpMethod) {
@@ -313,19 +326,34 @@ const handleGameEvent = async (event: any) => {
     }
 
     // Verify API key and game ID using Firebase
-    const studio = await admin.firestore()
+    console.log('Starting Firebase authentication for game event...');
+    console.log('API Key:', apiKey ? 'provided' : 'missing');
+    console.log('Game ID:', body.gameId);
+    console.log('Firebase config:', {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ? 'set' : 'not set',
+      privateKey: process.env.FIREBASE_PRIVATE_KEY ? 'set' : 'not set'
+    });
+
+    const studioQuery = admin.firestore()
       .collection('studios')
       .where('apiKey', '==', apiKey)
       .where('gameId', '==', body.gameId)
-      .limit(1)
-      .get();
+      .limit(1);
+
+    console.log('Executing Firebase query for game event...');
+    const studio = await studioQuery.get();
+    console.log('Firebase query complete. Empty?', studio.empty);
 
     if (studio.empty) {
+      console.log('No studio found with provided API key and game ID');
       return {
         statusCode: 401,
         body: JSON.stringify({ error: 'Invalid API key or game ID' })
       };
     }
+    
+    console.log('Studio found, proceeding with game event');
 
     // Generate event ID
     const eventId = uuidv4();
