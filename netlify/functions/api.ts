@@ -27,13 +27,24 @@ try {
 }
 
 // Initialize PostgreSQL connection
+console.log('Initializing PostgreSQL pool with config:', {
+  host: process.env.POSTGRES_HOST,
+  port: process.env.POSTGRES_PORT || '5432',
+  database: process.env.POSTGRES_DB,
+  user: process.env.POSTGRES_USER ? 'set' : 'not set',
+  password: process.env.POSTGRES_PASSWORD ? 'set' : 'not set',
+  ssl: true
+});
+
 const pool = new Pool({
   host: process.env.POSTGRES_HOST,
   port: parseInt(process.env.POSTGRES_PORT || '5432'),
   database: process.env.POSTGRES_DB,
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
-  ssl: true,
+  ssl: {
+    rejectUnauthorized: false // For development only
+  },
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 10000,
   max: 20
