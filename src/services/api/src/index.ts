@@ -4,11 +4,12 @@ import admin from 'firebase-admin';
 import dotenv from 'dotenv';
 import path from 'path';
 import { Kafka } from 'kafkajs';
+import crypto from 'crypto';
 import { FirebaseEvent, GameEvent } from './types';
 import { transformFirebaseEvent, validateEventType } from './transforms';
 
 // Load environment variables from root .env
-dotenv.config({ path: path.join(__dirname, '../../../.env') });
+dotenv.config({ path: path.join(__dirname, '../../../../.env') });
 
 // Initialize Firebase Admin
 if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
@@ -115,7 +116,7 @@ const validateEvent = async (req: express.Request, res: express.Response, next: 
   if (!validateEventType(event.type)) {
     return res.status(400).json({ 
       error: 'Invalid event type',
-      valid_types: ['leaderboard_update', 'game_start', 'game_end', 'achievement', 
+      valid_types: ['leaderboard_create', 'tournament_create', 'quest_create', 'leaderboard_update', 'game_start', 'game_end', 'achievement', 
                    'score_update', 'kill', 'death', 'level_up', 'quest_progress', 
                    'item_acquire', 'custom']
     });
@@ -126,9 +127,11 @@ const validateEvent = async (req: express.Request, res: express.Response, next: 
     const studioSnapshot = await admin.firestore()
       .collection('studios')
       .where('apiKey', '==', apiKey)
+      .limit(1)
       .get();
 
     if (studioSnapshot.empty) {
+      console.error('No studio found with API key:', apiKey);
       return res.status(401).json({ error: 'Invalid API key' });
     }
 
@@ -136,8 +139,13 @@ const validateEvent = async (req: express.Request, res: express.Response, next: 
     const studioData = studio.data();
 
     // Verify game ID belongs to this studio
-    if (studioData.gameId !== event.gameId) {
-      return res.status(403).json({ error: 'Game ID does not match studio' });
+    if (!studioData.games || !studioData.games.includes(event.gameId)) {
+      console.error('Game ID not found in studio games:', { 
+        studioId: studio.id, 
+        gameId: event.gameId, 
+        games: studioData.games 
+      });
+      return res.status(403).json({ error: 'Game ID does not belong to studio' });
     }
 
     // Add studio ID to request for downstream processing
@@ -248,6 +256,232 @@ const startServer = async () => {
       console.error('Stack:', err.stack);
       res.status(500).json({ 
         error: 'Failed to process event',
+        message: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    }
+  });
+
+  // Quest creation endpoint
+  app.post('/quests', validateEvent, async (req: express.Request, res: express.Response) => {
+    console.log('Received quest creation request:', JSON.stringify(req.body, null, 2));
+    try {
+      const { gameId, type, data } = req.body;
+      
+      // Validate quest-specific fields
+      if (!data.name || !data.description || !data.objectives) {
+        return res.status(400).json({
+          error: 'Missing required quest fields',
+          required: ['name', 'description', 'objectives']
+        });
+      }
+
+      interface QuestEvent {
+        id: string;
+        gameId: string;
+        type: string;
+        name: string;
+        description: string;
+        objectives: any[];
+        startDate?: string;
+        endDate?: string;
+        requirements?: any;
+        rewards?: any;
+        createdAt: string;
+      }
+
+      const questEvent: QuestEvent = {
+        id: crypto.randomUUID(),
+        gameId,
+        type,
+        name: data.name,
+        description: data.description,
+        objectives: data.objectives,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        requirements: data.requirements,
+        rewards: data.rewards,
+        createdAt: new Date().toISOString()
+      };
+
+      console.log('Publishing quest event:', JSON.stringify(questEvent, null, 2));
+
+      // Publish to Redpanda
+      try {
+        await producer.send({
+          topic: 'quest.events',
+          messages: [{
+            key: questEvent.id,
+            value: JSON.stringify(questEvent)
+          }]
+        });
+        console.log('Quest event published to Redpanda');
+      } catch (error) {
+        console.error('Failed to publish quest event to Redpanda:', error);
+        throw error;
+      }
+
+      // Return success response
+      res.status(200).json({
+        id: questEvent.id,
+        status: 'processing',
+        message: 'Quest creation event sent successfully'
+      });
+    } catch (error) {
+      const err = error as Error;
+      console.error('Error processing quest creation:', err);
+      console.error('Stack:', err.stack);
+      res.status(500).json({
+        error: 'Failed to process quest creation',
+        message: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    }
+  });
+
+  // Tournament creation endpoint
+  // Leaderboard creation endpoint
+  app.post('/leaderboards', validateEvent, async (req: express.Request, res: express.Response) => {
+    console.log('Received leaderboard creation request:', JSON.stringify(req.body, null, 2));
+    try {
+      const { gameId, type, data } = req.body;
+
+      // Validate leaderboard-specific fields
+      if (!data.name || !data.eventType || !data.scoreField || !data.scoreType || !data.timePeriod) {
+        return res.status(400).json({
+          error: 'Missing required leaderboard fields',
+          required: ['name', 'eventType', 'scoreField', 'scoreType', 'timePeriod']
+        });
+      }
+
+      interface LeaderboardEvent {
+        id: string;
+        gameId: string;
+        type: string;
+        name: string;
+        eventType: string;
+        scoreField: string;
+        scoreType: 'highest' | 'lowest' | 'sum';
+        timePeriod: 'daily' | 'weekly' | 'monthly' | 'all-time';
+        startDate: string;
+        endDate?: string;
+        isRolling: boolean;
+        maxEntriesPerUser: number;
+        highestScoresPerUser: number;
+        requiredMetadata: string;
+        createdAt: string;
+      }
+
+      const leaderboardEvent: LeaderboardEvent = {
+        id: crypto.randomUUID(),
+        gameId,
+        type,
+        name: data.name,
+        eventType: data.eventType,
+        scoreField: data.scoreField,
+        scoreType: data.scoreType,
+        timePeriod: data.timePeriod,
+        startDate: data.startDate || new Date().toISOString(),
+        endDate: data.endDate,
+        isRolling: data.isRolling || false,
+        maxEntriesPerUser: data.maxEntriesPerUser || 1000,
+        highestScoresPerUser: data.highestScoresPerUser ? 1 : 0,
+        requiredMetadata: JSON.stringify(data.requiredMetadata || []),
+        createdAt: new Date().toISOString()
+      };
+
+      console.log('Publishing leaderboard event:', JSON.stringify(leaderboardEvent, null, 2));
+
+      // Publish to Redpanda
+      try {
+        await producer.send({
+          topic: 'leaderboard.events',
+          messages: [{
+            key: leaderboardEvent.id,
+            value: JSON.stringify(leaderboardEvent)
+          }]
+        });
+        console.log('Leaderboard event published to Redpanda');
+      } catch (error) {
+        console.error('Failed to publish leaderboard event to Redpanda:', error);
+        throw error;
+      }
+
+      // Return success response
+      res.status(200).json({
+        id: leaderboardEvent.id,
+        status: 'processing',
+        message: 'Leaderboard creation event sent successfully'
+      });
+    } catch (error) {
+      const err = error as Error;
+      console.error('Error processing leaderboard creation:', err);
+      console.error('Stack:', err.stack);
+      res.status(500).json({
+        error: 'Failed to process leaderboard creation',
+        message: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    }
+  });
+
+  app.post('/tournaments', validateEvent, async (req: express.Request, res: express.Response) => {
+    console.log('Received tournament creation request:', JSON.stringify(req.body, null, 2));
+    try {
+      const { gameId, type, data } = req.body;
+      
+      // Validate tournament-specific fields
+      if (!data.name || !data.description || !data.startDate || !data.endDate || !data.rewards) {
+        return res.status(400).json({
+          error: 'Missing required tournament fields',
+          required: ['name', 'description', 'startDate', 'endDate', 'rewards']
+        });
+      }
+
+      const tournamentEvent = {
+        id: crypto.randomUUID(),
+        gameId,
+        type,
+        name: data.name,
+        description: data.description,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        requirements: data.requirements,
+        rewards: data.rewards,
+        rules: data.rules,
+        maxParticipants: data.maxParticipants,
+        createdAt: new Date().toISOString()
+      };
+
+      console.log('Publishing tournament event:', JSON.stringify(tournamentEvent, null, 2));
+
+      // Publish to Redpanda
+      try {
+        await producer.send({
+          topic: 'tournament.events',
+          messages: [{
+            key: tournamentEvent.id,
+            value: JSON.stringify(tournamentEvent)
+          }]
+        });
+        console.log('Tournament event published to Redpanda');
+      } catch (error) {
+        console.error('Failed to publish tournament event to Redpanda:', error);
+        throw error;
+      }
+
+      // Return success response
+      res.status(200).json({
+        id: tournamentEvent.id,
+        status: 'processing',
+        message: 'Tournament creation event sent successfully'
+      });
+    } catch (error) {
+      const err = error as Error;
+      console.error('Error processing tournament creation:', err);
+      console.error('Stack:', err.stack);
+      res.status(500).json({
+        error: 'Failed to process tournament creation',
         message: err.message,
         stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
       });

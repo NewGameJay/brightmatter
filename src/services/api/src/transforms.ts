@@ -37,7 +37,7 @@ export function transformFirebaseEvent(event: FirebaseEvent): GameEvent {
 }
 
 export function validateEventType(type: string): boolean {
-  return ['leaderboard_update', 'game_start', 'game_end', 'achievement', 
+  return ['leaderboard_create', 'leaderboard_update', 'game_start', 'game_end', 'achievement', 
           'score_update', 'kill', 'death', 'level_up', 'quest_progress', 
-          'item_acquire', 'custom'].includes(type);
+          'item_acquire', 'custom', 'quest_create', 'tournament_create'].includes(type);
 }
