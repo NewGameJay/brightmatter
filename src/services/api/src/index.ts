@@ -578,6 +578,13 @@ const startServer = async () => {
   });
 
   // Health check endpoint
+  app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy' });
+  });
+
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Event API listening on port ${PORT}`);
   });
 
   process.on('SIGTERM', async () => {
