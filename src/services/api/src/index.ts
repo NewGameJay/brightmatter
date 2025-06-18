@@ -1,42 +1,72 @@
+import 'dotenv/config';
 import express from 'express';
 import bodyParser from 'body-parser';
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
 import path from 'path';
 import { Kafka } from 'kafkajs';
+import { Pool } from 'pg';
 import crypto from 'crypto';
 import { FirebaseEvent, GameEvent } from './types';
 import { transformFirebaseEvent, validateEventType } from './transforms';
+
+// Initialize PostgreSQL client
+if (!process.env.POSTGRES_HOST || !process.env.POSTGRES_DB || !process.env.POSTGRES_USER || !process.env.POSTGRES_PASSWORD) {
+  console.error('Missing required PostgreSQL environment variables');
+  process.exit(1);
+}
+
+const pool = new Pool({
+  host: process.env.POSTGRES_HOST,
+  port: parseInt(process.env.POSTGRES_PORT || '5432'),
+  database: process.env.POSTGRES_DB,
+  user: process.env.POSTGRES_USER,
+  password: process.env.POSTGRES_PASSWORD,
+  ssl: {
+    rejectUnauthorized: false // For development only
+  },
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 10000,
+  max: 20
+});
+
+// Add error handler to the pool
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle PostgreSQL client', err);
+});
 
 // Load environment variables from root .env
 dotenv.config({ path: path.join(__dirname, '../../../../.env') });
 
 // Initialize Firebase Admin
+let firebaseInitialized = false;
+
 if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
-  throw new Error('Missing Firebase credentials in environment variables');
-}
+  console.error('Missing Firebase credentials in environment variables');
+} else {
+  try {
+    // Check if app is already initialized
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+        })
+      });
 
-try {
-  // Check if app is already initialized
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-      })
-    });
-
-    // Configure Firestore settings
-    const db = admin.firestore();
-    db.settings({
-      ignoreUndefinedProperties: true
-    });
-    console.log('Firebase Admin initialized successfully');
+      // Configure Firestore settings
+      const db = admin.firestore();
+      db.settings({
+        ignoreUndefinedProperties: true
+      });
+      console.log('Firebase Admin initialized successfully');
+      firebaseInitialized = true;
+    }
+  } catch (error) {
+    console.error('Error initializing Firebase Admin:', error);
+    console.warn('Starting server without Firebase authentication');
   }
-} catch (error) {
-  console.error('Error initializing Firebase Admin:', error);
-  process.exit(1);
 }
 
 const app = express();
@@ -122,6 +152,13 @@ const validateEvent = async (req: express.Request, res: express.Response, next: 
     });
   }
 
+  if (!firebaseInitialized) {
+    console.warn('Firebase not initialized, skipping API key validation');
+    req.body.studioId = 'test-studio';
+    next();
+    return;
+  }
+
   try {
     // Find studio by API key
     const studioSnapshot = await admin.firestore()
@@ -139,11 +176,11 @@ const validateEvent = async (req: express.Request, res: express.Response, next: 
     const studioData = studio.data();
 
     // Verify game ID belongs to this studio
-    if (!studioData.games || !studioData.games.includes(event.gameId)) {
-      console.error('Game ID not found in studio games:', { 
+    if (studioData.gameId !== event.gameId) {
+      console.error('Game ID does not match studio:', { 
         studioId: studio.id, 
-        gameId: event.gameId, 
-        games: studioData.games 
+        expectedGameId: studioData.gameId,
+        receivedGameId: event.gameId
       });
       return res.status(403).json({ error: 'Game ID does not belong to studio' });
     }
@@ -178,12 +215,14 @@ const startServer = async () => {
   });
   const producer = kafka.producer();
 
+  let redpandaConnected = false;
   try {
     await producer.connect();
     console.log('Connected to Redpanda');
+    redpandaConnected = true;
   } catch (error) {
     console.error('Failed to connect to Redpanda:', error);
-    process.exit(1);
+    console.warn('Starting server without Redpanda connection');
   }
 
   // TODO: Re-enable Redpanda after fixing auth
@@ -392,19 +431,24 @@ const startServer = async () => {
 
       console.log('Publishing leaderboard event:', JSON.stringify(leaderboardEvent, null, 2));
 
-      // Publish to Redpanda
-      try {
-        await producer.send({
-          topic: 'leaderboard.events',
-          messages: [{
-            key: leaderboardEvent.id,
-            value: JSON.stringify(leaderboardEvent)
-          }]
-        });
-        console.log('Leaderboard event published to Redpanda');
-      } catch (error) {
-        console.error('Failed to publish leaderboard event to Redpanda:', error);
-        throw error;
+      // Publish to Redpanda if connected
+      if (redpandaConnected) {
+        try {
+          await producer.send({
+            topic: 'leaderboard.events',
+            messages: [{
+              key: leaderboardEvent.id,
+              value: JSON.stringify(leaderboardEvent)
+            }]
+          });
+          console.log('Leaderboard event published to Redpanda');
+        } catch (error) {
+          console.error('Failed to publish leaderboard event to Redpanda:', error);
+          // Continue without event publishing
+          console.warn('Continuing without event publishing');
+        }
+      } else {
+        console.warn('Skipping event publishing - Redpanda not connected');
       }
 
       // Return success response
@@ -488,19 +532,52 @@ const startServer = async () => {
     }
   });
 
+  // Get a single leaderboard
+  app.get('/leaderboards/:id', validateEvent, async (req: express.Request, res: express.Response) => {
+    try {
+      const { id } = req.params;
+      
+      const result = await pool.query(
+        'SELECT * FROM leaderboards WHERE id = $1',
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Leaderboard not found' });
+      }
+
+      res.status(200).json(result.rows[0]);
+    } catch (error) {
+      console.error('Error fetching leaderboard:', error);
+      res.status(500).json({ error: 'Failed to fetch leaderboard' });
+    }
+  });
+
+  // List leaderboards for a game
+  app.get('/leaderboards', validateEvent, async (req: express.Request, res: express.Response) => {
+    try {
+      const { gameId } = req.query;
+      
+      if (!gameId) {
+        return res.status(400).json({ error: 'gameId query parameter is required' });
+      }
+
+      console.log('Fetching leaderboards for game:', gameId);
+      
+      const result = await pool.query(
+        'SELECT * FROM leaderboards WHERE game_id = $1 ORDER BY created_at DESC',
+        [gameId]
+      );
+
+      console.log(`Found ${result.rows.length} leaderboards`);
+      res.status(200).json(result.rows);
+    } catch (error) {
+      console.error('Error listing leaderboards:', error);
+      res.status(500).json({ error: 'Failed to list leaderboards' });
+    }
+  });
+
   // Health check endpoint
-  app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'healthy' });
-  });
-
-  const PORT = process.env.PORT || 3001;
-  const server = app.listen(PORT, () => {
-    console.log(`Event API listening on port ${PORT}`);
-  });
-
-  server.on('error', (error: any) => {
-    console.error('Server error:', error);
-    process.exit(1);
   });
 
   process.on('SIGTERM', async () => {
