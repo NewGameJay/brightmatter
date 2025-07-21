@@ -129,8 +129,29 @@ CREATE TABLE formula_configs (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Leaderboards table
+CREATE TABLE leaderboards (
+    id VARCHAR PRIMARY KEY,
+    game_id VARCHAR NOT NULL,
+    name VARCHAR NOT NULL,
+    event_type VARCHAR NOT NULL,
+    score_field VARCHAR NOT NULL,
+    score_type VARCHAR NOT NULL CHECK (score_type IN ('highest', 'lowest', 'sum')),
+    time_period VARCHAR NOT NULL CHECK (time_period IN ('daily', 'weekly', 'monthly', 'all-time')),
+    start_date TIMESTAMP WITH TIME ZONE,
+    end_date TIMESTAMP WITH TIME ZONE,
+    is_rolling BOOLEAN DEFAULT false,
+    max_entries_per_user INTEGER DEFAULT 1,
+    highest_scores_per_user INTEGER DEFAULT 1,
+    required_metadata JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
 -- Create indexes for common queries
 CREATE INDEX idx_campaign_dates ON campaigns(start_date, end_date);
 CREATE INDEX idx_tournament_dates ON tournaments(start_date, end_date);
 CREATE INDEX idx_quest_status ON quests(status, game_id);
 CREATE INDEX idx_veri_scores_latest ON veri_scores(creator_id, calculated_at DESC);
+CREATE INDEX idx_leaderboard_dates ON leaderboards(start_date, end_date);
+CREATE INDEX idx_leaderboard_game ON leaderboards(game_id, event_type);

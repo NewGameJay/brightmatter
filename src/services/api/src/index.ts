@@ -25,9 +25,11 @@ const pool = new Pool({
   ssl: {
     rejectUnauthorized: false // For development only
   },
-  connectionTimeoutMillis: 10000,
-  idleTimeoutMillis: 10000,
-  max: 20
+  connectionTimeoutMillis: 30000, // 30 seconds
+  idleTimeoutMillis: 30000, // 30 seconds
+  max: 20,
+  statement_timeout: 30000, // 30 seconds
+  query_timeout: 30000 // 30 seconds
 });
 
 // Add error handler to the pool
@@ -538,7 +540,25 @@ const startServer = async () => {
       const { id } = req.params;
       
       const result = await pool.query(
-        'SELECT * FROM leaderboards WHERE id = $1',
+        `SELECT 
+          id,
+          game_id as "gameId",
+          name,
+          event_type as "eventType",
+          score_field as "scoreField",
+          score_type as "scoreType",
+          score_formula as "scoreFormula",
+          time_period as "timePeriod",
+          start_date as "startDate",
+          end_date as "endDate",
+          is_rolling as "isRolling",
+          max_entries_per_user as "maxEntriesPerUser",
+          highest_scores_per_user as "highestScoresPerUser",
+          required_metadata as "requiredMetadata",
+          variables,
+          created_at as "createdAt"
+        FROM leaderboards 
+        WHERE id = $1`,
         [id]
       );
 
@@ -564,13 +584,42 @@ const startServer = async () => {
 
       console.log('Fetching leaderboards for game:', gameId);
       
-      const result = await pool.query(
-        'SELECT * FROM leaderboards WHERE game_id = $1 ORDER BY created_at DESC',
-        [gameId]
-      );
+      // Try to get a client from the pool
+      const client = await pool.connect();
+      let result;
+      try {
+        console.log('Connected to database, executing query...');
+        result = await client.query(
+          `SELECT 
+            id,
+            game_id as "gameId",
+            name,
+            event_type as "eventType",
+            score_field as "scoreField",
+            score_type as "scoreType",
+            score_formula as "scoreFormula",
+            time_period as "timePeriod",
+            start_date as "startDate",
+            end_date as "endDate",
+            is_rolling as "isRolling",
+            max_entries_per_user as "maxEntriesPerUser",
+            highest_scores_per_user as "highestScoresPerUser",
+            required_metadata as "requiredMetadata",
+            variables,
+            created_at as "createdAt"
+          FROM leaderboards 
+          WHERE game_id = $1 
+          ORDER BY created_at DESC
+          LIMIT 100`, // Add a limit to prevent too many rows
+          [gameId]
+        );
+      } finally {
+        // Release the client back to the pool
+        client.release();
+      }
 
-      console.log(`Found ${result.rows.length} leaderboards`);
-      res.status(200).json(result.rows);
+      console.log(`Found ${result?.rows?.length || 0} leaderboards`);
+      res.status(200).json(result?.rows || []);
     } catch (error) {
       console.error('Error listing leaderboards:', error);
       res.status(500).json({ error: 'Failed to list leaderboards' });

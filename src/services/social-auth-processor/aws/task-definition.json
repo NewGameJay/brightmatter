@@ -1,0 +1,80 @@
+{
+  "family": "social-auth-processor",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/social-auth-processor-role",
+  "containerDefinitions": [
+    {
+      "name": "social-auth-processor",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/social-auth-processor:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/social-auth-processor",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_HOST",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/POSTGRES_HOST"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/POSTGRES_PORT"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/POSTGRES_DB"
+        },
+        {
+          "name": "POSTGRES_USER",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/POSTGRES_USER"
+        },
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/POSTGRES_PASSWORD"
+        },
+        {
+          "name": "REDPANDA_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/REDPANDA_CLIENT_ID"
+        },
+        {
+          "name": "REDPANDA_BROKERS",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/REDPANDA_BROKERS"
+        },
+        {
+          "name": "REDPANDA_USERNAME",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/REDPANDA_USERNAME"
+        },
+        {
+          "name": "REDPANDA_PASSWORD",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/REDPANDA_PASSWORD"
+        },
+        {
+          "name": "TWITTER_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/TWITTER_CLIENT_ID"
+        },
+        {
+          "name": "TWITTER_CLIENT_SECRET",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/TWITTER_CLIENT_SECRET"
+        },
+        {
+          "name": "TWITTER_CALLBACK_URL",
+          "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/brightmatter/TWITTER_CALLBACK_URL"
+        }
+      ]
+    }
+  ]
+}

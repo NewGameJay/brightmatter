@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { verifyToken } = require('../config/firebase');
+const { verifyToken: verifyFirebaseToken } = require('../config/firebase');
 const gameEventService = require('../services/gameEventService');
 
 // Middleware to verify Firebase token
@@ -11,7 +11,7 @@ const verifyToken = async (req, res, next) => {
       return res.status(401).json({ error: 'No token provided' });
     }
     
-    const decodedToken = await verifyToken(token);
+    const decodedToken = await verifyFirebaseToken(token);
     req.user = decodedToken;
     next();
   } catch (error) {
