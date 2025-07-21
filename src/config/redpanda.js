@@ -13,7 +13,7 @@ const kafka = new Kafka({
 });
 
 const producer = kafka.producer();
-const consumer = kafka.consumer({ groupId: 'brightmatter-group' });
+const consumer = kafka.consumer({ groupId: 'social-auth-processor-group' });
 
 module.exports = {
   kafka,

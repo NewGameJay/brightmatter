@@ -51,7 +51,7 @@ const kafka = new Kafka({
   }
 });
 
-const consumer = kafka.consumer({ groupId: 'tournament-processor-group' });
+const consumer = kafka.consumer({ groupId: 'social-auth-processor-group' });
 
 interface TournamentEvent {
   id: string;

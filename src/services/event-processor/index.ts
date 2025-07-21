@@ -53,7 +53,7 @@ const kafka = new Kafka({
   }
 });
 
-const consumer = kafka.consumer({ groupId: 'event-processor-group' });
+const consumer = kafka.consumer({ groupId: 'social-auth-processor-group' });
 
 async function processEvent(event: any) {
   const client = await pool.connect();
