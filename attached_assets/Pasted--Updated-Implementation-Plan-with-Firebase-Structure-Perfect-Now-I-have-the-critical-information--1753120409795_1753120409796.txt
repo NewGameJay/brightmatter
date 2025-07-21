@@ -1,0 +1,753 @@
+🚀 Updated Implementation Plan with Firebase Structure
+Perfect! Now I have the critical information needed. Let me create a comprehensive implementation plan that accounts for the Firebase structure and your infrastructure setup.
+📋 Updated Architecture Overview
+Data Storage Responsibilities
+
+Firebase: Studio profiles, API keys, feature flags, tier/subscription
+BrightMatter: Everything else (game data, events, campaigns, progress, rewards)
+
+Authentication Flow
+mermaidGame Client → API Key → BoredGamer → Validate in Firebase → Forward to BrightMatter
+                                         ↓
+                                    Studio ID extracted
+                                         ↓
+                                    All events tagged with Studio ID
+🔧 Implementation Plan for AI
+1. Redpanda Topic Creation Script
+javascript// brightmatter/scripts/create-topics.js
+const { Kafka } = require('kafkajs');
+
+const kafka = new Kafka({
+  clientId: 'topic-creator',
+  brokers: process.env.REDPANDA_BROKERS.split(','),
+  sasl: {
+    mechanism: 'scram-sha-256',
+    username: process.env.REDPANDA_USERNAME,
+    password: process.env.REDPANDA_PASSWORD
+  },
+  ssl: true
+});
+
+const topics = [
+  {
+    topic: 'game.events',
+    numPartitions: 10,
+    replicationFactor: 3,
+    configEntries: [
+      { name: 'retention.ms', value: '604800000' }, // 7 days
+      { name: 'compression.type', value: 'snappy' }
+    ]
+  },
+  {
+    topic: 'config.quests',
+    numPartitions: 3,
+    replicationFactor: 3
+  },
+  {
+    topic: 'config.leaderboards',
+    numPartitions: 3,
+    replicationFactor: 3
+  },
+  {
+    topic: 'config.tournaments',
+    numPartitions: 3,
+    replicationFactor: 3
+  },
+  {
+    topic: 'config.battlepasses',
+    numPartitions: 3,
+    replicationFactor: 3
+  },
+  {
+    topic: 'quest.events',
+    numPartitions: 5,
+    replicationFactor: 3
+  },
+  {
+    topic: 'leaderboard.events',
+    numPartitions: 5,
+    replicationFactor: 3
+  },
+  {
+    topic: 'tournament.events',
+    numPartitions: 5,
+    replicationFactor: 3
+  },
+  {
+    topic: 'battlepass.events',
+    numPartitions: 5,
+    replicationFactor: 3
+  },
+  {
+    topic: 'reward.events',
+    numPartitions: 5,
+    replicationFactor: 3
+  },
+  {
+    topic: 'reward.status',
+    numPartitions: 3,
+    replicationFactor: 3
+  },
+  {
+    topic: 'ui.updates',
+    numPartitions: 10,
+    replicationFactor: 3
+  }
+];
+
+async function createTopics() {
+  const admin = kafka.admin();
+  
+  try {
+    await admin.connect();
+    
+    console.log('Creating topics...');
+    await admin.createTopics({
+      topics,
+      waitForLeaders: true
+    });
+    
+    console.log('Topics created successfully');
+    
+    // List topics to verify
+    const existingTopics = await admin.listTopics();
+    console.log('Existing topics:', existingTopics);
+    
+  } catch (error) {
+    console.error('Error creating topics:', error);
+  } finally {
+    await admin.disconnect();
+  }
+}
+
+createTopics();
+2. API Key Validation Middleware
+typescript// boredgamer/src/middleware/api-key-validation.ts
+import { db } from '@/lib/firebase-admin';
+
+export async function validateApiKey(apiKey: string) {
+  try {
+    // Query Firebase for studio with this API key
+    const studiosSnapshot = await db
+      .collection('studios')
+      .where('apiKey', '==', apiKey)
+      .limit(1)
+      .get();
+    
+    if (studiosSnapshot.empty) {
+      return { valid: false, error: 'Invalid API key' };
+    }
+    
+    const studio = studiosSnapshot.docs[0];
+    const studioData = studio.data();
+    
+    // Check subscription status
+    if (studioData.subscriptionStatus !== 'active') {
+      return { valid: false, error: 'Subscription inactive' };
+    }
+    
+    return {
+      valid: true,
+      studioId: studio.id,
+      studioData: {
+        name: studioData.name,
+        tier: studioData.tier,
+        features: studioData.features
+      }
+    };
+  } catch (error) {
+    console.error('API key validation error:', error);
+    return { valid: false, error: 'Validation error' };
+  }
+}
+
+// Rate limiting configuration
+export const rateLimitConfig = {
+  ecosystem: { requestsPerMinute: 1000, burstSize: 100 },
+  pro: { requestsPerMinute: 5000, burstSize: 500 },
+  enterprise: { requestsPerMinute: 20000, burstSize: 2000 }
+};
+3. BrightMatter Event Ingestion Service
+javascript// brightmatter/src/services/event-ingestion.js
+const { Kafka } = require('kafkajs');
+const { Pool } = require('pg');
+const { RateLimiter } = require('./rate-limiter');
+
+class EventIngestionService {
+  constructor() {
+    this.kafka = new Kafka({
+      clientId: 'event-ingestion',
+      brokers: process.env.REDPANDA_BROKERS.split(','),
+      sasl: {
+        mechanism: 'scram-sha-256',
+        username: process.env.REDPANDA_USERNAME,
+        password: process.env.REDPANDA_PASSWORD
+      },
+      ssl: true
+    });
+    
+    this.producer = this.kafka.producer();
+    this.pool = new Pool({
+      connectionString: process.env.RDS_CONNECTION_STRING
+    });
+    
+    this.rateLimiter = new RateLimiter();
+  }
+  
+  async init() {
+    await this.producer.connect();
+  }
+  
+  async ingestEvent(event, studioData) {
+    // Apply rate limiting based on tier
+    const limited = await this.rateLimiter.checkLimit(
+      studioData.studioId,
+      studioData.tier
+    );
+    
+    if (limited) {
+      throw new Error('Rate limit exceeded');
+    }
+    
+    // Validate event schema
+    this.validateEvent(event);
+    
+    // Enrich event with studio data
+    const enrichedEvent = {
+      ...event,
+      studioId: studioData.studioId,
+      studioTier: studioData.tier,
+      eventId: this.generateEventId(),
+      ingestedAt: new Date().toISOString(),
+      partitionKey: `${event.gameId}:${event.userId}`
+    };
+    
+    // Send to Kafka
+    await this.producer.send({
+      topic: 'game.events',
+      messages: [{
+        key: enrichedEvent.partitionKey,
+        value: JSON.stringify(enrichedEvent),
+        headers: {
+          studioId: studioData.studioId,
+          gameId: event.gameId,
+          eventType: event.eventType
+        }
+      }]
+    });
+    
+    // Store raw event for debugging
+    await this.storeRawEvent(enrichedEvent);
+    
+    return {
+      eventId: enrichedEvent.eventId,
+      status: 'accepted',
+      timestamp: enrichedEvent.ingestedAt
+    };
+  }
+  
+  validateEvent(event) {
+    const required = ['eventType', 'userId', 'gameId', 'timestamp'];
+    for (const field of required) {
+      if (!event[field]) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+    
+    // Validate event type
+    const validEventTypes = [
+      'match_start', 'match_end', 'score_update',
+      'level_complete', 'item_collected', 'enemy_killed',
+      'quest_action', 'achievement_unlocked', 'custom'
+    ];
+    
+    if (!validEventTypes.includes(event.eventType)) {
+      throw new Error(`Invalid event type: ${event.eventType}`);
+    }
+  }
+  
+  generateEventId() {
+    return `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+  
+  async storeRawEvent(event) {
+    const query = `
+      INSERT INTO events_raw (
+        event_id, studio_id, game_id, user_id, 
+        event_type, event_data, ingested_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `;
+    
+    await this.pool.query(query, [
+      event.eventId,
+      event.studioId,
+      event.gameId,
+      event.userId,
+      event.eventType,
+      JSON.stringify(event.metadata || {}),
+      event.ingestedAt
+    ]);
+  }
+}
+
+module.exports = EventIngestionService;
+4. Updated Database Schema for BrightMatter
+sql-- brightmatter/migrations/001_initial_schema.sql
+
+-- Raw events table (for debugging and replay)
+CREATE TABLE events_raw (
+  event_id VARCHAR(50) PRIMARY KEY,
+  studio_id VARCHAR(50) NOT NULL,
+  game_id VARCHAR(100) NOT NULL,
+  user_id VARCHAR(255) NOT NULL,
+  event_type VARCHAR(50) NOT NULL,
+  event_data JSONB NOT NULL,
+  ingested_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for events_raw
+CREATE INDEX idx_events_raw_studio_game ON events_raw(studio_id, game_id);
+CREATE INDEX idx_events_raw_user ON events_raw(user_id);
+CREATE INDEX idx_events_raw_ingested ON events_raw(ingested_at DESC);
+
+-- Games table (linked to Firebase studios)
+CREATE TABLE games (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  studio_id VARCHAR(50) NOT NULL, -- Firebase UID
+  game_id VARCHAR(100) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  webhook_url TEXT,
+  webhook_secret TEXT,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Quests table
+CREATE TABLE quests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  studio_id VARCHAR(50) NOT NULL,
+  game_id VARCHAR(100) NOT NULL,
+  quest_id VARCHAR(100) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  conditions JSONB NOT NULL,
+  rewards JSONB,
+  start_date TIMESTAMPTZ,
+  end_date TIMESTAMPTZ,
+  community_gate JSONB,
+  status VARCHAR(20) DEFAULT 'active',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(game_id, quest_id)
+);
+
+-- Quest progress
+CREATE TABLE quest_progress (
+  id BIGSERIAL PRIMARY KEY,
+  quest_id UUID REFERENCES quests(id),
+  user_id VARCHAR(255) NOT NULL,
+  progress JSONB NOT NULL DEFAULT '{}',
+  completed BOOLEAN DEFAULT false,
+  completed_at TIMESTAMPTZ,
+  rewards_claimed BOOLEAN DEFAULT false,
+  last_updated TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(quest_id, user_id)
+);
+
+-- Leaderboards
+CREATE TABLE leaderboards (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  studio_id VARCHAR(50) NOT NULL,
+  game_id VARCHAR(100) NOT NULL,
+  leaderboard_id VARCHAR(100) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  scoring_type VARCHAR(50) NOT NULL, -- 'highest', 'cumulative', 'latest'
+  reset_period VARCHAR(20), -- 'daily', 'weekly', 'monthly', 'never'
+  formula JSONB,
+  community_gate JSONB,
+  metadata JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(game_id, leaderboard_id)
+);
+
+-- Leaderboard entries
+CREATE TABLE leaderboard_entries (
+  id BIGSERIAL PRIMARY KEY,
+  leaderboard_id UUID REFERENCES leaderboards(id),
+  user_id VARCHAR(255) NOT NULL,
+  score NUMERIC NOT NULL DEFAULT 0,
+  rank INTEGER,
+  metadata JSONB DEFAULT '{}',
+  last_updated TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(leaderboard_id, user_id)
+);
+
+-- Add indexes
+CREATE INDEX idx_leaderboard_entries_score ON leaderboard_entries(leaderboard_id, score DESC);
+CREATE INDEX idx_quest_progress_user ON quest_progress(user_id);
+5. ECS Task Definition for Processors
+json// brightmatter/ecs/task-definitions/quest-processor.json
+{
+  "family": "brightmatter-quest-processor",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "containerDefinitions": [
+    {
+      "name": "quest-processor",
+      "image": "${ECR_REGISTRY}/brightmatter-processors:latest",
+      "command": ["node", "src/processors/quest-processor.js"],
+      "environment": [
+        {
+          "name": "PROCESSOR_TYPE",
+          "value": "quest"
+        },
+        {
+          "name": "CONSUMER_GROUP",
+          "value": "quest-processor-group"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "REDPANDA_BROKERS",
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:brightmatter/redpanda-brokers"
+        },
+        {
+          "name": "RDS_CONNECTION_STRING",
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:brightmatter/rds-connection"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/brightmatter",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "quest-processor"
+        }
+      }
+    }
+  ]
+}
+6. BoredGamer API Route Updates
+typescript// boredgamer/src/app/api/events/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { validateApiKey } from '@/middleware/api-key-validation';
+import { BrightMatterClient } from '@/lib/brightmatter-client';
+
+export async function POST(request: NextRequest) {
+  try {
+    // Extract API key
+    const apiKey = request.headers.get('x-api-key');
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'Missing API key' },
+        { status: 401 }
+      );
+    }
+    
+    // Validate API key against Firebase
+    const validation = await validateApiKey(apiKey);
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: validation.error },
+        { status: 401 }
+      );
+    }
+    
+    // Parse event
+    const event = await request.json();
+    
+    // Forward to BrightMatter
+    const brightMatter = new BrightMatterClient();
+    const result = await brightMatter.ingestEvent(event, {
+      studioId: validation.studioId,
+      tier: validation.studioData.tier
+    });
+    
+    return NextResponse.json(result);
+    
+  } catch (error) {
+    console.error('Event ingestion error:', error);
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+7. Quest Processor Implementation
+javascript// brightmatter/src/processors/quest-processor.js
+const { Kafka } = require('kafkajs');
+const { Pool } = require('pg');
+
+class QuestProcessor {
+  constructor() {
+    this.kafka = new Kafka({
+      clientId: 'quest-processor',
+      brokers: process.env.REDPANDA_BROKERS.split(',')
+    });
+    
+    this.consumer = this.kafka.consumer({ 
+      groupId: 'quest-processor-group' 
+    });
+    
+    this.producer = this.kafka.producer();
+    
+    this.db = new Pool({
+      connectionString: process.env.RDS_CONNECTION_STRING
+    });
+  }
+  
+  async start() {
+    await this.consumer.connect();
+    await this.producer.connect();
+    
+    await this.consumer.subscribe({ 
+      topic: 'quest.events', 
+      fromBeginning: false 
+    });
+    
+    await this.consumer.run({
+      eachMessage: async ({ message }) => {
+        await this.processEvent(JSON.parse(message.value.toString()));
+      }
+    });
+  }
+  
+  async processEvent(event) {
+    console.log('Processing quest event:', event.eventId);
+    
+    try {
+      // Get active quests for this game/user
+      const quests = await this.getActiveQuests(
+        event.gameId, 
+        event.userId
+      );
+      
+      for (const quest of quests) {
+        if (this.eventMatchesQuest(event, quest)) {
+          await this.updateQuestProgress(quest, event);
+        }
+      }
+      
+    } catch (error) {
+      console.error('Quest processing error:', error);
+      // Send to dead letter queue
+      await this.sendToDeadLetter(event, error);
+    }
+  }
+  
+  async getActiveQuests(gameId, userId) {
+    const query = `
+      SELECT q.*, qp.progress, qp.completed
+      FROM quests q
+      LEFT JOIN quest_progress qp ON q.id = qp.quest_id AND qp.user_id = $2
+      WHERE q.game_id = $1
+        AND q.status = 'active'
+        AND (q.start_date IS NULL OR q.start_date <= NOW())
+        AND (q.end_date IS NULL OR q.end_date > NOW())
+        AND (qp.completed IS NULL OR qp.completed = false)
+    `;
+    
+    const result = await this.db.query(query, [gameId, userId]);
+    return result.rows;
+  }
+  
+  eventMatchesQuest(event, quest) {
+    const conditions = quest.conditions;
+    
+    // Check event type matches
+    if (conditions.eventType && conditions.eventType !== event.eventType) {
+      return false;
+    }
+    
+    // Check additional conditions
+    if (conditions.filters) {
+      for (const [key, value] of Object.entries(conditions.filters)) {
+        if (event.metadata?.[key] !== value) {
+          return false;
+        }
+      }
+    }
+    
+    return true;
+  }
+  
+  async updateQuestProgress(quest, event) {
+    const currentProgress = quest.progress || {};
+    const updatedProgress = this.calculateProgress(
+      quest, 
+      currentProgress, 
+      event
+    );
+    
+    // Update in database
+    const query = `
+      INSERT INTO quest_progress (quest_id, user_id, progress, completed, completed_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (quest_id, user_id)
+      DO UPDATE SET 
+        progress = $3,
+        completed = $4,
+        completed_at = $5,
+        last_updated = NOW()
+    `;
+    
+    const isComplete = this.isQuestComplete(quest, updatedProgress);
+    
+    await this.db.query(query, [
+      quest.id,
+      event.userId,
+      JSON.stringify(updatedProgress),
+      isComplete,
+      isComplete ? new Date() : null
+    ]);
+    
+    // If completed, trigger rewards
+    if (isComplete && !quest.completed) {
+      await this.triggerRewards(quest, event.userId);
+    }
+    
+    // Send UI update
+    await this.sendUIUpdate({
+      type: 'quest_progress',
+      questId: quest.id,
+      userId: event.userId,
+      progress: updatedProgress,
+      completed: isComplete
+    });
+  }
+  
+  calculateProgress(quest, currentProgress, event) {
+    const progressType = quest.conditions.progressType;
+    
+    switch (progressType) {
+      case 'count':
+        return {
+          current: (currentProgress.current || 0) + 1,
+          target: quest.conditions.target
+        };
+        
+      case 'accumulate':
+        const value = event.metadata?.[quest.conditions.valueField] || 1;
+        return {
+          current: (currentProgress.current || 0) + value,
+          target: quest.conditions.target
+        };
+        
+      case 'unique':
+        const items = new Set(currentProgress.items || []);
+        const itemId = event.metadata?.[quest.conditions.uniqueField];
+        if (itemId) items.add(itemId);
+        return {
+          items: Array.from(items),
+          current: items.size,
+          target: quest.conditions.target
+        };
+        
+      default:
+        return currentProgress;
+    }
+  }
+  
+  isQuestComplete(quest, progress) {
+    return progress.current >= progress.target;
+  }
+  
+  async triggerRewards(quest, userId) {
+    if (!quest.rewards || quest.rewards.length === 0) return;
+    
+    for (const reward of quest.rewards) {
+      await this.producer.send({
+        topic: 'reward.events',
+        messages: [{
+          key: userId,
+          value: JSON.stringify({
+            userId,
+            gameId: quest.game_id,
+            source: `quest_${quest.quest_id}`,
+            reward,
+            timestamp: new Date().toISOString()
+          })
+        }]
+      });
+    }
+  }
+  
+  async sendUIUpdate(update) {
+    await this.producer.send({
+      topic: 'ui.updates',
+      messages: [{
+        key: update.userId,
+        value: JSON.stringify(update)
+      }]
+    });
+  }
+}
+
+// Start the processor
+const processor = new QuestProcessor();
+processor.start().catch(console.error);
+📝 Complete AI Implementation Instructions
+markdown# BrightMatter Implementation Guide for AI
+
+## Environment Setup
+1. Clone the repository
+2. Copy .env.example to .env and fill in the values
+3. Run `npm install` in both boredgamer/ and brightmatter/ directories
+
+## Implementation Order
+
+### Phase 1: Infrastructure (Day 1)
+1. Run the topic creation script
+2. Test database connections
+3. Deploy base Docker images to ECR
+
+### Phase 2: Event Ingestion (Day 2)
+1. Implement event ingestion service
+2. Add API key validation to BoredGamer
+3. Test end-to-end event flow
+
+### Phase 3: Processors (Days 3-5)
+1. Quest processor (start with this - simplest)
+2. Leaderboard processor
+3. Tournament processor
+4. Battle pass processor
+5. Reward processor
+
+### Phase 4: Integration (Days 6-7)
+1. Update all BoredGamer API routes
+2. Add WebSocket support
+3. Test with SDK
+
+### Testing Strategy
+- Unit tests for each processor
+- Integration tests for event flow
+- Load test with 1000 events/second
+- Manual testing with BoredGamer UI
+
+## Key Implementation Notes
+
+1. **Partition Strategy**: Always use `gameId:userId` as partition key
+2. **Idempotency**: Store eventId in Redis with 1-hour TTL
+3. **Error Handling**: All errors go to dead letter topic
+4. **Monitoring**: Log every event with correlation ID
+5. **Rate Limiting**: Implement sliding window per studio
+
+## Deployment Checklist
+- [ ] All topics created in Redpanda
+- [ ] Database migrations run
+- [ ] ECS task definitions created
+- [ ] CloudWatch log groups created
+- [ ] Secrets Manager secrets configured
+- [ ] API Gateway routes configured
+- [ ] Load balancer health checks passing
+This implementation plan is now ready for AI coding. The key clarifications:
+
+Firebase stores: Studio data, API keys, tier/features
+BrightMatter stores: Everything else (game data, progress, etc.)
+Authentication: API keys validated against Firebase
+Rate limiting: Based on studio tier
+Topics: Need to be created (script provided)
+Deployment: You'll add ECS tasks manually
