@@ -6,3 +6,32 @@ channel = "stable-24_05"
 
 [deployment]
 run = ["sh", "-c", "npm run dev"]
+
+[workflows]
+
+[[workflows.workflow]]
+name = "Social Auth Processor"
+author = 44051639
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd src/services/social-auth-processor && npm install && npm start"
+
+[[workflows.workflow]]
+name = "Quest Processor"
+author = 44051639
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd src/services/quest-processor && npm install && npm start"
+
+[[workflows.workflow]]
+name = "Tournament Processor"
+author = 44051639
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd src/services/tournament-processor && npm install && npm start"
