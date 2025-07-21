@@ -1,0 +1,69 @@
+
+{
+  "family": "quest-processor",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::724772055314:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::724772055314:role/quest-processor-role",
+  "containerDefinitions": [
+    {
+      "name": "quest-processor",
+      "image": "patronjay23/quest-processor:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/quest-processor",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "POSTGRES_HOST",
+          "value": "brightmatter-db.cwra0uc6su8r.us-east-1.rds.amazonaws.com"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "value": "brightmatter"
+        },
+        {
+          "name": "POSTGRES_USER",
+          "value": "postgres"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-password"
+        },
+        {
+          "name": "REDPANDA_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-password"
+        },
+        {
+          "name": "REDPANDA_BROKERS",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-brokers"
+        },
+        {
+          "name": "REDPANDA_USERNAME",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-username"
+        },
+        {
+          "name": "REDPANDA_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-client-id"
+        }
+      ]
+    }
+  ]
+}
