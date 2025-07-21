@@ -28,10 +28,14 @@ task = "shell.exec"
 args = "cd src/services/quest-processor && npm install && npm start"
 
 [[workflows.workflow]]
-name = "Tournament Processor"
+name = "Event Processor"
 author = 44051639
 mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd src/services/tournament-processor && npm install && npm start"
+args = "cd src/services/event-processor && node index.ts"
+
+[[ports]]
+localPort = 3000
+externalPort = 80
