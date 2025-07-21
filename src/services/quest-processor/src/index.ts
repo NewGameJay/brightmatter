@@ -158,6 +158,23 @@ async function startConsumer() {
     });
     console.log('Successfully subscribed to quest.events topic');
 
+    // Add HTTP server for health checks (required for Replit deployment)
+    import http from 'http';
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'healthy', service: 'quest-processor' }));
+      } else {
+        res.writeHead(404);
+        res.end('Not Found');
+      }
+    });
+
+    server.listen(8080, '0.0.0.0', () => {
+      console.log('Health check server running on port 8080');
+    });
+
     console.log('Starting message processing loop...');
     await consumer.run({
       eachMessage: async ({ topic, partition, message }) => {
@@ -192,7 +209,7 @@ async function startConsumer() {
       }
     });
 
-    console.log('Quest processor started and waiting for messages...');
+    console.log('Quest Processor started. Listening for events...');
 
     // Keep the process running
     process.stdin.resume();

@@ -1,0 +1,11 @@
+
+modules = ["nodejs-20"]
+run = "npm start"
+
+[deployment]
+run = ["npm", "start"]
+build = ["npm", "install"]
+
+[[ports]]
+localPort = 8080
+externalPort = 80

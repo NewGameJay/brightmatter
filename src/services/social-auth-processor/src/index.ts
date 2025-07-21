@@ -51,7 +51,7 @@ const twitterClient = new TwitterApi({
 async function handleOAuthInitiation(payload: any) {
   try {
     const { userId } = payload;
-    
+
     console.log('Generating OAuth URL for user:', userId);
 
     // Generate OAuth URL with state
@@ -182,7 +182,7 @@ async function handleOAuthCallback(payload: any) {
   } catch (error) {
     console.error('OAuth callback failed:', error);
     await client.query('ROLLBACK');
-    
+
     await producer.send({
       topic: 'social.auth.error',
       messages: [{
@@ -209,7 +209,24 @@ async function startConsumer() {
       topics: ['social.connect', 'social.connect.callback']
     });
 
-    console.log('OAuth processor started, listening for events...');
+    // Add HTTP server for health checks (required for Replit deployment)
+    import http from 'http';
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'healthy', service: 'social-auth-processor' }));
+      } else {
+        res.writeHead(404);
+        res.end('Not Found');
+      }
+    });
+
+    server.listen(8080, '0.0.0.0', () => {
+      console.log('Health check server running on port 8080');
+    });
+
+    console.log('Social Auth Processor started. Listening for events...');
 
     await consumer.run({
       eachMessage: async ({ topic, partition, message }) => {
@@ -218,7 +235,7 @@ async function startConsumer() {
 
         // Parse event type from payload
         const { type, ...data } = payload;
-        
+
         switch (type) {
           case 'CONNECT_TWITTER':
             await handleOAuthInitiation(data);
