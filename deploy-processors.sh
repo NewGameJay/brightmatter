@@ -3,7 +3,7 @@
 
 set -e
 
-echo "🚀 Building and deploying quest and tournament processors..."
+echo "🚀 Building Docker images for quest and tournament processors..."
 
 # Make sure Docker is logged in
 echo "🔐 Please ensure you're logged in to Docker Hub with 'docker login'"
@@ -26,30 +26,8 @@ cd ../../../
 
 echo "✅ Docker images built and pushed successfully!"
 echo ""
-echo "📋 Task definitions are ready at:"
+echo "📋 Task definitions are available at:"
 echo "  - src/services/quest-processor/aws/task-definition.json"
 echo "  - src/services/tournament-processor/aws/task-definition.json"
 echo ""
-echo "🏗️ To deploy to ECS:"
-echo "1. Register the task definitions:"
-echo "   aws ecs register-task-definition --cli-input-json file://src/services/quest-processor/aws/task-definition.json"
-echo "   aws ecs register-task-definition --cli-input-json file://src/services/tournament-processor/aws/task-definition.json"
-echo ""
-echo "2. Create services (replace with your subnet/security group IDs):"
-echo "   aws ecs create-service \\"
-echo "     --cluster brightmatter-oauth-cluster \\"
-echo "     --service-name quest-processor \\"
-echo "     --task-definition quest-processor \\"
-echo "     --desired-count 1 \\"
-echo "     --launch-type FARGATE \\"
-echo "     --network-configuration \"awsvpcConfiguration={subnets=[YOUR_SUBNET_ID],securityGroups=[YOUR_SECURITY_GROUP_ID],assignPublicIp=ENABLED}\""
-echo ""
-echo "   aws ecs create-service \\"
-echo "     --cluster brightmatter-oauth-cluster \\"
-echo "     --service-name tournament-processor \\"
-echo "     --task-definition tournament-processor \\"
-echo "     --desired-count 1 \\"
-echo "     --launch-type FARGATE \\"
-echo "     --network-configuration \"awsvpcConfiguration={subnets=[YOUR_SUBNET_ID],securityGroups=[YOUR_SECURITY_GROUP_ID],assignPublicIp=ENABLED}\""
-echo ""
-echo "🎉 Deployment complete!"
+echo "🏗️ You can now register these task definitions manually in AWS ECS"
