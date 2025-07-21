@@ -1,0 +1,69 @@
+
+{
+  "family": "leaderboard-processor",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::724772055314:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::724772055314:role/leaderboard-processor-role",
+  "containerDefinitions": [
+    {
+      "name": "leaderboard-processor",
+      "image": "patronjay23/leaderboard-processor:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/leaderboard-processor",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_HOST",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/POSTGRES_HOST"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/POSTGRES_PORT"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/POSTGRES_DB"
+        },
+        {
+          "name": "POSTGRES_USER",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/POSTGRES_USER"
+        },
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/POSTGRES_PASSWORD"
+        },
+        {
+          "name": "REDPANDA_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/REDPANDA_CLIENT_ID"
+        },
+        {
+          "name": "REDPANDA_BROKERS",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/REDPANDA_BROKERS"
+        },
+        {
+          "name": "REDPANDA_USERNAME",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/REDPANDA_USERNAME"
+        },
+        {
+          "name": "REDPANDA_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/REDPANDA_PASSWORD"
+        }
+      ]
+    }
+  ]
+}
