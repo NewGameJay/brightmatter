@@ -1,0 +1,138 @@
+{
+  "taskDefinitionArn": "arn:aws:ecs:us-east-1:724772055314:task-definition/social-auth-processor:8",
+  "containerDefinitions": [
+    {
+      "name": "social-auth-processor",
+      "image": "patronjay23/social-auth-processor:topic-fix-2025-07-19",
+      "cpu": 0,
+      "portMappings": [],
+      "essential": true,
+      "environment": [
+        {
+          "name": "POSTGRES_USER",
+          "value": "postgres"
+        },
+        {
+          "name": "TWITTER_CLIENT_ID",
+          "value": "eVZxOXVZOEJ2eFlzdEJ2cUVaMUM6MTpjaQ"
+        },
+        {
+          "name": "TWITTER_ACCESS_TOKEN",
+          "value": "1434155861308542981-gbjc5WaamH63OyO3RCMGMGEgiRKVC1"
+        },
+        {
+          "name": "TWITTER_BEARER_TOKEN",
+          "value": "AAAAAAAAAAAAAAAAAAAAAF31vwEAAAAASTVp3vQyuZo6BM4K3vpqlYD6f84%3DHDpWJE3epGlVoc1mALfHaZBdC9MREbR5qnyA3Rb4F1Jp6ZnLcl"
+        },
+        {
+          "name": "TWITTER_CALLBACK_URL",
+          "value": "https://api.brightmatter.io/auth/twitter/callback"
+        },
+        {
+          "name": "POSTGRES_HOST",
+          "value": "brightmatter-db.cwra0uc6su8r.us-east-1.rds.amazonaws.com"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "value": "brightmatter"
+        },
+        {
+          "name": "TWITTER_API_KEY",
+          "value": "sMViKYy0CWqJItRCLNRhyJkSD"
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "secrets": [
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-password"
+        },
+        {
+          "name": "REDPANDA_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-password"
+        },
+        {
+          "name": "REDPANDA_BROKERS",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-brokers"
+        },
+        {
+          "name": "REDPANDA_USERNAME",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-username"
+        },
+        {
+          "name": "TWITTER_CLIENT_SECRET",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/twitter-client-secret"
+        },
+        {
+          "name": "TWITTER_API_KEY_SECRET",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/twitter-api-key-secret"
+        },
+        {
+          "name": "TWITTER_ACCESS_TOKEN_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/twitter-access-token-key"
+        },
+        {
+          "name": "REDPANDA_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:us-east-1:724772055314:parameter/brightmatter/redpanda-client-id"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/social-auth-processor",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "systemControls": []
+    }
+  ],
+  "family": "social-auth-processor",
+  "executionRoleArn": "arn:aws:iam::724772055314:role/ecsTaskExecutionRole",
+  "networkMode": "awsvpc",
+  "revision": 8,
+  "volumes": [],
+  "status": "ACTIVE",
+  "requiresAttributes": [
+    {
+      "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+    },
+    {
+      "name": "ecs.capability.execution-role-awslogs"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+    },
+    {
+      "name": "ecs.capability.secrets.ssm.environment-variables"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+    },
+    {
+      "name": "ecs.capability.task-eni"
+    }
+  ],
+  "placementConstraints": [],
+  "compatibilities": [
+    "EC2",
+    "FARGATE"
+  ],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "registeredAt": "2025-07-20T04:27:20.235Z",
+  "registeredBy": "arn:aws:iam::724772055314:root",
+  "tags": []
+}
