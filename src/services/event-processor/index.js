@@ -1,16 +1,41 @@
 const { Pool } = require('pg');
-const { spawn } = require('child_process');
+const { Kafka } = require('kafkajs');
 require('dotenv').config();
+
+// Validate environment variables
+if (!process.env.POSTGRES_HOST || !process.env.POSTGRES_DB || !process.env.POSTGRES_USER || !process.env.POSTGRES_PASSWORD) {
+  console.error('Missing required PostgreSQL environment variables');
+  process.exit(1);
+}
+
+if (!process.env.REDPANDA_BROKERS || !process.env.REDPANDA_USERNAME || !process.env.REDPANDA_PASSWORD) {
+  console.error('Missing required Redpanda environment variables');
+  process.exit(1);
+}
 
 // Initialize PostgreSQL client
 const pool = new Pool({
-  host: 'brightmatter-db.cwra0uc6su8r.us-east-1.rds.amazonaws.com',
-  port: 5432,
-  database: 'brightmatter',
-  user: 'postgres',
-  password: '2gL~5$_i-evP2!03w(7dUAU.]Miz',
+  host: process.env.POSTGRES_HOST,
+  port: parseInt(process.env.POSTGRES_PORT) || 5432,
+  database: process.env.POSTGRES_DB,
+  user: process.env.POSTGRES_USER,
+  password: process.env.POSTGRES_PASSWORD,
   ssl: {
     rejectUnauthorized: false
+  }
+});
+
+// Initialize Kafka client
+const kafka = new Kafka({
+  clientId: process.env.REDPANDA_CLIENT_ID || 'brightmatter',
+  brokers: [process.env.REDPANDA_BROKERS],
+  ssl: {
+    rejectUnauthorized: false
+  },
+  sasl: {
+    mechanism: 'scram-sha-256',
+    username: process.env.REDPANDA_USERNAME,
+    password: process.env.REDPANDA_PASSWORD
   }
 });
 
@@ -32,93 +57,60 @@ async function processGameEvent(event) {
   }
 }
 
-// Process social posts
-async function processSocialPost(post) {
-  const {
-    platform,
-    creator_id,
-    external_post_id,
-    post_url,
-    content_text,
-    raw_metrics,
-    campaign_id,
-    timestamp
-  } = post;
 
+
+// Start the consumer
+async function startConsumer() {
   try {
-    await pool.query(
-      `INSERT INTO social_posts 
-       (platform, creator_id, external_post_id, post_url, content_text, raw_metrics, campaign_id, timestamp)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING post_id`,
-      [platform, creator_id, external_post_id, post_url, content_text, raw_metrics, campaign_id, new Date(timestamp)]
-    );
-    console.log(`Processed social post from ${platform} for creator ${creator_id}`);
+    console.log('Connecting to PostgreSQL...');
+    await pool.connect();
+    console.log('✅ Connected to PostgreSQL');
+
+    console.log('Connecting to Redpanda...');
+    const consumer = kafka.consumer({ groupId: 'event-processor-group' });
+    await consumer.connect();
+    console.log('✅ Connected to Redpanda cluster');
+
+    // Subscribe to topics
+    await consumer.subscribe({
+      topics: ['game.events'],
+      fromBeginning: true
+    });
+    console.log('Successfully subscribed to game.events topic');
+
+    // Start consuming messages
+    await consumer.run({
+      eachMessage: async ({ topic, partition, message }) => {
+        try {
+          const event = JSON.parse(message.value.toString());
+          console.log(`Received ${topic} event:`, {
+            partition,
+            offset: message.offset,
+            value: message.value?.toString()
+          });
+
+          if (topic === 'game.events') {
+            await processGameEvent(event);
+          }
+        } catch (error) {
+          console.error(`Error processing message from topic ${topic}:`, error);
+          console.error('Message was:', message.value?.toString());
+        }
+      }
+    });
+
   } catch (error) {
-    console.error('Error processing social post:', error);
-    throw error;
+    console.error('Error starting consumer:', error);
+    process.exit(1);
   }
 }
-
-// Process a message from any topic
-async function processMessage(topic, message) {
-  try {
-    // Parse the rpk JSON output
-    const data = JSON.parse(message);
-    if (!data.value) {
-      console.error('Invalid message format - no value:', message);
-      return;
-    }
-
-    // Parse the actual event data
-    const event = JSON.parse(data.value);
-    if (topic === 'game.events.raw') {
-      await processGameEvent(event);
-    } else if (topic === 'social.posts.raw') {
-      await processSocialPost(event);
-    }
-  } catch (error) {
-    console.error(`Error processing message from topic ${topic}:`, error);
-    console.error('Message was:', message);
-  }
-}
-
-// Start consuming messages using rpk
-function startConsumer(topic) {
-  const consumer = spawn('rpk', ['topic', 'consume', topic]);
-
-  consumer.stdout.on('data', (data) => {
-    const message = data.toString().trim();
-    if (message) {
-      processMessage(topic, message);
-    }
-  });
-
-  consumer.stderr.on('data', (data) => {
-    console.error(`Error from ${topic} consumer:`, data.toString());
-  });
-
-  consumer.on('close', (code) => {
-    console.log(`Consumer for ${topic} exited with code ${code}`);
-    // Restart the consumer after a delay
-    setTimeout(() => startConsumer(topic), 5000);
-  });
-
-  return consumer;
-}
-
-// Start all consumers
-const consumers = [
-  startConsumer('game.events.raw'),
-  startConsumer('social.posts.raw')
-];
 
 // Handle graceful shutdown
 const shutdown = async () => {
   try {
-    // Kill all consumers
-    consumers.forEach(consumer => consumer.kill());
+    console.log('Shutting down event processor...');
     await pool.end();
+    console.log('PostgreSQL connection closed');
     process.exit(0);
   } catch (error) {
     console.error('Error during shutdown:', error);
@@ -130,4 +122,5 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 console.log('Event processor started...');
+startConsumer();
 
