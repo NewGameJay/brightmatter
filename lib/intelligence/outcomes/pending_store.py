@@ -66,6 +66,7 @@ class PendingOutcome:
 
     skill_name: str = ""
     client_id: str = ""
+    channel_id: str = ""
     module_id: str = ""
     run_id: str = ""
     node_id: str = ""
@@ -92,6 +93,7 @@ class PendingOutcome:
             "tracking_id": self.tracking_id,
             "skill_name": self.skill_name,
             "client_id": self.client_id,
+            "channel_id": self.channel_id,
             "module_id": self.module_id,
             "run_id": self.run_id,
             "node_id": self.node_id,
@@ -120,6 +122,7 @@ class PendingOutcome:
             tracking_id=d.get("tracking_id", ""),
             skill_name=d.get("skill_name", ""),
             client_id=d.get("client_id", ""),
+            channel_id=d.get("channel_id", ""),
             module_id=d.get("module_id", ""),
             run_id=d.get("run_id", ""),
             node_id=d.get("node_id", ""),
@@ -165,6 +168,8 @@ class PendingOutcomeStore:
         delivery_metadata: Dict[str, Any],
         generation_score: Optional[float] = None,
         platform_config: Optional[Dict[str, Any]] = None,
+        channel_id: str = "",
+        channel_config: Optional[Any] = None,
     ) -> PendingOutcome:
         """
         Register a new pending outcome after skill execution.
@@ -178,15 +183,30 @@ class PendingOutcomeStore:
             delivery_metadata: Measurable identifiers extracted from outputs.
             generation_score: Immediate validation_score (diagnostic only).
             platform_config: Which retrieval module/credentials to use.
+            channel_id: Marketing channel identifier (e.g. "email.lifecycle").
+            channel_config: Optional ChannelConfig whose measurement_window_hours
+                and full_measurement_days override the default 24h/7d schedule.
         """
         now = datetime.now(timezone.utc)
         client_id = execution_context.get("client_id", "unknown")
+
+        # Use channel-specific measurement windows when available
+        window_24h = timedelta(hours=24)
+        window_7d = timedelta(days=7)
+        if channel_config is not None:
+            mw = getattr(channel_config, "measurement_window_hours", None)
+            fm = getattr(channel_config, "full_measurement_days", None)
+            if mw is not None:
+                window_24h = timedelta(hours=mw)
+            if fm is not None:
+                window_7d = timedelta(days=fm)
 
         pending = PendingOutcome(
             prediction_id=prediction_id,
             tracking_id=tracking_id,
             skill_name=execution_context.get("skill_name", ""),
             client_id=client_id,
+            channel_id=channel_id,
             module_id=execution_context.get("module_id", ""),
             run_id=execution_context.get("run_id", ""),
             node_id=execution_context.get("node_id", ""),
@@ -196,8 +216,8 @@ class PendingOutcomeStore:
             platform_config=platform_config or {},
             status="pending",
             created_at=now.isoformat(),
-            due_24h=(now + timedelta(hours=24)).isoformat(),
-            due_7d=(now + timedelta(days=7)).isoformat(),
+            due_24h=(now + window_24h).isoformat(),
+            due_7d=(now + window_7d).isoformat(),
         )
 
         with self._lock:

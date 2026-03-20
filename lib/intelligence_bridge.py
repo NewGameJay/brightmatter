@@ -524,6 +524,17 @@ class IntelligenceBridge:
         """
         context = context or {}
 
+        # Infer marketing channel from skill name
+        channel_id = ""
+        channel_config = None
+        try:
+            from lib.intelligence.adapters.channels import infer_channel_from_skill, get_channel_config
+            channel_id = infer_channel_from_skill(skill_name) or ""
+            if channel_id:
+                channel_config = get_channel_config(channel_id)
+        except ImportError:
+            pass
+
         # Generate tracking ID even if engine is unavailable
         tracking_id = str(uuid.uuid4())[:12]
 
@@ -535,6 +546,8 @@ class IntelligenceBridge:
             "expected_signal": expected_signal,
             "expected_baseline": expected_baseline,
             "context": context,
+            "channel_id": channel_id,
+            "channel_config": channel_config,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "prediction_id": None,
         }

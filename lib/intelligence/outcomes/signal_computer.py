@@ -98,6 +98,7 @@ class CompositeSignalComputer:
         feedback_signals: Optional[Dict[str, Any]] = None,
         behavior_signals: Optional[Dict[str, Any]] = None,
         baseline_metrics: Optional[Dict[str, Any]] = None,
+        channel_config: Optional[Any] = None,
     ) -> CompositeSignal:
         """
         Compute composite signal and classify projection accuracy.
@@ -110,9 +111,12 @@ class CompositeSignalComputer:
             feedback_signals: Client feedback data (rating, sentiment, etc).
             behavior_signals: User behavior data (edit_depth, time_to_approval, etc).
             baseline_metrics: Phase 0 snapshot for delta computation.
+            channel_config: Optional ChannelConfig with primary_signal and
+                secondary_signals to use for platform scoring.
         """
         platform = self._score_platform(
-            skill_name, platform_metrics or {}, baseline_metrics or {}
+            skill_name, platform_metrics or {}, baseline_metrics or {},
+            channel_config=channel_config,
         )
         feedback = self._score_feedback(feedback_signals or {})
         behavior = self._score_behavior(behavior_signals or {})
@@ -163,17 +167,27 @@ class CompositeSignalComputer:
         skill_name: str,
         metrics: Dict[str, Any],
         baseline: Dict[str, Any],
+        channel_config: Optional[Any] = None,
     ) -> float:
         """
         Score platform metrics against baseline. Returns 0-1.
 
-        Extracts skill-relevant metrics, computes deltas against baseline,
-        and normalizes to a 0-1 range using sigmoid-like scaling.
+        When a ``channel_config`` is provided its ``primary_signal`` and
+        ``secondary_signals`` are used instead of the hard-coded per-skill
+        extractor table.
         """
         if not metrics:
-            return 0.5  # neutral when no data
+            return 0.5
 
-        relevant_keys = _SKILL_METRIC_EXTRACTORS.get(skill_name, [])
+        relevant_keys = None
+        if channel_config is not None:
+            primary = getattr(channel_config, "primary_signal", None)
+            secondary = getattr(channel_config, "secondary_signals", [])
+            if primary:
+                relevant_keys = [primary] + list(secondary)
+
+        if not relevant_keys:
+            relevant_keys = _SKILL_METRIC_EXTRACTORS.get(skill_name, [])
         if not relevant_keys:
             return _generic_platform_score(metrics, baseline)
 
