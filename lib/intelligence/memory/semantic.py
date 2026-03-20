@@ -606,53 +606,76 @@ class SemanticMemoryStore:
     ) -> Dict[str, Any]:
         """
         Find the intersection of all episode contexts.
-        
+
         For numeric values, finds common ranges.
         For categorical values, finds common exact matches.
-        
+
+        When episodes have no context data at all, returns a minimal
+        synthetic context with the skill name and episode count so
+        that downstream ``_find_similar_pattern`` can still group
+        patterns meaningfully instead of matching everything.
+
         Args:
             episodes: List of episodes to extract common context from
-            
+
         Returns:
-            Dictionary of common context key-value pairs
+            Dictionary of common context key-value pairs (never empty)
         """
         if not episodes:
-            return {}
-        
-        # Start with first episode's context
+            return {"_synthetic": True, "_source": "no_episodes"}
+
         contexts = [e.prediction.context for e in episodes if e.prediction.context]
-        
+
         if not contexts:
-            return {}
-        
-        # Find keys present in all contexts
+            # All episodes lack context — build synthetic key from skill
+            skill = episodes[0].prediction.skill_name if episodes else "unknown"
+            return {
+                "_synthetic": True,
+                "skill_name": skill,
+                "episode_count": len(episodes),
+            }
+
+        # Find keys present in ALL contexts (strict intersection)
         common_keys = set(contexts[0].keys())
         for ctx in contexts[1:]:
             common_keys &= set(ctx.keys())
-        
-        common_context = {}
-        
+
+        # Relax: if strict intersection is empty, fall back to keys in >=50% of contexts
+        if not common_keys and len(contexts) > 1:
+            from collections import Counter
+            key_counts = Counter(k for ctx in contexts for k in ctx)
+            threshold = max(2, len(contexts) // 2)
+            common_keys = {k for k, v in key_counts.items() if v >= threshold}
+
+        common_context: Dict[str, Any] = {}
+
         for key in common_keys:
-            values = [ctx[key] for ctx in contexts]
-            
-            # Check if all values are numeric
+            values = [ctx[key] for ctx in contexts if key in ctx]
+            if not values:
+                continue
+
             if all(isinstance(v, (int, float)) for v in values):
-                # For numeric: use range with tolerance
                 min_val = min(values)
                 max_val = max(values)
                 mean_val = sum(values) / len(values)
-                
-                # If range is tight (within 20% of mean), use mean as common value
-                if max_val - min_val <= 0.2 * abs(mean_val) if mean_val != 0 else 0.2:
+
+                if max_val - min_val <= (0.2 * abs(mean_val) if mean_val != 0 else 0.2):
                     common_context[key] = mean_val
                 else:
-                    # Store as range
                     common_context[key] = {"min": min_val, "max": max_val}
             else:
-                # For categorical: only include if all same
                 if len(set(str(v) for v in values)) == 1:
                     common_context[key] = values[0]
-        
+
+        # Guarantee non-empty so _find_similar_pattern has something to match on
+        if not common_context:
+            skill = episodes[0].prediction.skill_name if episodes else "unknown"
+            common_context = {
+                "_synthetic": True,
+                "skill_name": skill,
+                "episode_count": len(episodes),
+            }
+
         return common_context
     
     def _extract_recommendation(

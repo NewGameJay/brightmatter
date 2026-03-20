@@ -168,46 +168,50 @@ class MemoryConsolidationManager:
                 "procedural_created": 0,
             }
             
-            logger.info(f"Starting consolidation cycle for tenant: {tenant_id or 'all'}")
+            logger.info(f"[CONSOLIDATION] === Cycle START for tenant: {tenant_id or 'all'} ===")
             
             try:
                 # Step 1: Apply temporal decay to episodic memories
-                logger.debug("Step 1: Applying temporal decay to episodic memories")
+                logger.info("[CONSOLIDATION] Step 1: Applying temporal decay")
                 decay_stats = self._episodic.decay_all(tenant_id)
                 stats["episodic_decayed"] = decay_stats.get("decayed", 0)
-                logger.info(f"Decayed {stats['episodic_decayed']} episodic memories")
+                logger.info(
+                    f"[CONSOLIDATION] Step 1 DONE: decayed={stats['episodic_decayed']}, "
+                    f"to_consolidate={decay_stats.get('to_consolidate', 0)}, "
+                    f"archived={decay_stats.get('archived', 0)}"
+                )
                 
                 # Step 2: Consolidate ready episodes to semantic patterns
-                logger.debug("Step 2: Consolidating ready episodes to semantic patterns")
+                logger.info("[CONSOLIDATION] Step 2: Consolidating episodes → semantic")
                 consolidation_stats = self._consolidate_ready_episodes(tenant_id)
                 stats["episodes_consolidated"] = consolidation_stats.get("episodes_consolidated", 0)
                 stats["patterns_created"] = consolidation_stats.get("patterns_created", 0)
                 stats["patterns_updated"] = consolidation_stats.get("patterns_updated", 0)
                 logger.info(
-                    f"Consolidated {stats['episodes_consolidated']} episodes, "
-                    f"created {stats['patterns_created']} patterns, "
-                    f"updated {stats['patterns_updated']} patterns"
+                    f"[CONSOLIDATION] Step 2 DONE: consolidated={stats['episodes_consolidated']}, "
+                    f"created={stats['patterns_created']}, updated={stats['patterns_updated']}"
                 )
                 
                 # Step 3: Archive stale semantic patterns
-                logger.debug("Step 3: Archiving stale semantic patterns")
+                logger.info("[CONSOLIDATION] Step 3: Archiving stale semantic patterns")
                 if hasattr(self._semantic, 'forget_stale_patterns'):
                     archived_count = self._semantic.forget_stale_patterns()
                     stats["patterns_archived"] = archived_count
-                    logger.info(f"Archived {stats['patterns_archived']} stale patterns")
+                    logger.info(f"[CONSOLIDATION] Step 3 DONE: archived={stats['patterns_archived']}")
                 else:
-                    logger.warning("Semantic store missing forget_stale_patterns method")
+                    logger.warning("[CONSOLIDATION] Step 3 SKIP: semantic store missing forget_stale_patterns")
                 
                 # Step 4: Promote cross-skill patterns to procedural knowledge
-                logger.debug("Step 4: Promoting cross-skill patterns to procedural knowledge")
+                logger.info("[CONSOLIDATION] Step 4: Promoting to procedural")
                 procedural_count = self._promote_to_procedural()
                 stats["procedural_created"] = procedural_count
-                logger.info(f"Created {stats['procedural_created']} procedural knowledge entries")
+                logger.info(f"[CONSOLIDATION] Step 4 DONE: procedural_created={procedural_count}")
 
                 # Step 5: Archive old episodes past TTL
-                logger.debug("Step 5: Archiving old episodes past TTL")
+                logger.info("[CONSOLIDATION] Step 5: Archiving old episodes past TTL")
                 stats["episodes_archived"] = 0
                 tenants = self._episodic._list_tenants() if hasattr(self._episodic, '_list_tenants') else []
+                logger.info(f"[CONSOLIDATION] Step 5: tenants for TTL cleanup: {tenants}")
                 for tid in tenants:
                     skills = self._episodic._list_skills_for_tenant(tid) if hasattr(self._episodic, '_list_skills_for_tenant') else []
                     for skill in skills:
@@ -215,21 +219,22 @@ class MemoryConsolidationManager:
                             archive_stats = self._episodic.cleanup_old_episodes(tid, skill)
                             stats["episodes_archived"] += archive_stats.get("archived", 0)
                         except Exception as e:
-                            logger.warning(f"TTL cleanup failed for {tid}/{skill}: {e}")
-                if stats["episodes_archived"] > 0:
-                    logger.info(f"Archived {stats['episodes_archived']} old episodes past TTL")
+                            logger.warning(f"[CONSOLIDATION] TTL cleanup failed for {tid}/{skill}: {e}")
+                logger.info(f"[CONSOLIDATION] Step 5 DONE: episodes_archived={stats['episodes_archived']}")
 
                 # Step 6: Decay stale procedural knowledge
-                logger.debug("Step 6: Decaying stale procedural knowledge")
+                logger.info("[CONSOLIDATION] Step 6: Decaying procedural knowledge")
                 if hasattr(self._procedural, 'decay_all'):
                     proc_decay = self._procedural.decay_all()
                     stats["procedural_decayed"] = proc_decay if isinstance(proc_decay, int) else proc_decay.get("decayed", 0)
-                    logger.info(f"Decayed {stats.get('procedural_decayed', 0)} procedural entries")
+                    logger.info(f"[CONSOLIDATION] Step 6 DONE: procedural_decayed={stats.get('procedural_decayed', 0)}")
+                else:
+                    logger.warning("[CONSOLIDATION] Step 6 SKIP: procedural store missing decay_all")
 
             except Exception as e:
-                logger.error(f"Error during consolidation cycle: {e}", exc_info=True)
+                logger.error(f"[CONSOLIDATION] FATAL error during cycle: {e}", exc_info=True)
             
-            logger.info(f"Consolidation cycle complete: {stats}")
+            logger.info(f"[CONSOLIDATION] === Cycle COMPLETE === stats={stats}")
             return stats
     
     def _consolidate_ready_episodes(
@@ -257,49 +262,67 @@ class MemoryConsolidationManager:
         }
         
         try:
-            # Get tenants to process
+            # Step 2A: Get tenants to process
             if tenant_id:
                 tenants = [tenant_id]
             else:
                 tenants = self._get_all_tenants()
             
+            logger.info(f"[CONSOLIDATION] Step 2A: tenants found: {tenants} (count={len(tenants)})")
+            
             if not tenants:
-                logger.debug("No tenants found for consolidation")
+                logger.warning("[CONSOLIDATION] Step 2A: No tenants found — consolidation short-circuited")
                 return stats
             
             for tid in tenants:
+                # Step 2B: Get skills for this tenant
                 skills = self._get_skills_for_tenant(tid)
+                logger.info(f"[CONSOLIDATION] Step 2B: skills for tenant '{tid}': {skills} (count={len(skills)})")
                 
                 for skill_name in skills:
-                    # Get episodes ready for consolidation
+                    # Step 2C: Get episodes ready for consolidation
                     ready_episodes = self._episodic.get_for_consolidation(
                         tenant_id=tid,
                         skill_name=skill_name,
                         limit=self._config.consolidation_batch_size
                     )
                     
+                    logger.info(
+                        f"[CONSOLIDATION] Step 2C: ready episodes for {tid}/{skill_name}: "
+                        f"count={len(ready_episodes)}"
+                    )
+                    
+                    # Step 2D: Threshold check
                     if len(ready_episodes) < self._config.min_episodes_for_consolidation:
-                        logger.debug(
-                            f"Insufficient episodes for {tid}/{skill_name}: "
-                            f"{len(ready_episodes)} < {self._config.min_episodes_for_consolidation}"
+                        logger.info(
+                            f"[CONSOLIDATION] Step 2D: SKIP {tid}/{skill_name}: "
+                            f"{len(ready_episodes)} < min={self._config.min_episodes_for_consolidation}"
                         )
                         continue
                     
-                    # Consolidate episodes into semantic patterns
+                    logger.info(
+                        f"[CONSOLIDATION] Step 2D: PASS {tid}/{skill_name}: "
+                        f"{len(ready_episodes)} >= {self._config.min_episodes_for_consolidation}"
+                    )
+                    
+                    # Step 2E: Consolidate episodes into semantic patterns
                     if hasattr(self._semantic, 'consolidate_episodes'):
+                        logger.info(f"[CONSOLIDATION] Step 2E: calling semantic.consolidate_episodes for {tid}/{skill_name}")
                         result = self._semantic.consolidate_episodes(
                             tenant_id=tid,
                             skill_name=skill_name,
                             episodes=ready_episodes
                         )
+                        logger.info(f"[CONSOLIDATION] Step 2E: result={result}")
                         stats["patterns_created"] += result.get("created", 0)
                         stats["patterns_updated"] += result.get("updated", 0)
                     else:
-                        logger.warning("Semantic store missing consolidate_episodes method")
+                        logger.warning("[CONSOLIDATION] Step 2E: SKIP — semantic store missing consolidate_episodes")
                         continue
                     
-                    # Mark episodes as consolidated
+                    # Step 2F: Mark episodes as consolidated
                     for episode in ready_episodes:
+                        logger.info(f"[CONSOLIDATION] Step 2F: marking episode {episode.episode_id} as consolidated")
                         self._episodic.mark_consolidated(
                             episode_id=episode.episode_id,
                             tenant_id=tid,
@@ -307,12 +330,13 @@ class MemoryConsolidationManager:
                         )
                         stats["episodes_consolidated"] += 1
                     
-                    logger.debug(
-                        f"Consolidated {len(ready_episodes)} episodes for {tid}/{skill_name}"
+                    logger.info(
+                        f"[CONSOLIDATION] Batch complete for {tid}/{skill_name}: "
+                        f"consolidated={len(ready_episodes)}"
                     )
                     
         except Exception as e:
-            logger.error(f"Error in _consolidate_ready_episodes: {e}", exc_info=True)
+            logger.error(f"[CONSOLIDATION] ERROR in _consolidate_ready_episodes: {e}", exc_info=True)
         
         return stats
     

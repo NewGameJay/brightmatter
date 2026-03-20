@@ -271,24 +271,47 @@ class EpisodicMemoryStore:
             logger.debug(f"Failed to update retrieval metadata for {episode_id}: {e}")
     
     def _list_tenants(self) -> List[str]:
-        """List all tenant IDs with episodic memories."""
+        """List all tenant IDs with episodic memories.
+
+        Uses list_documents() which returns both real documents and
+        virtual parent-only documents that exist solely as parents of
+        subcollections.  Falls back to the firebase_client helper when
+        the raw SDK call is unavailable.
+        """
         try:
+            if hasattr(self._firebase, 'list_subcollections'):
+                # system/intelligence is the document; episodic is a subcollection
+                # Tenant IDs are documents inside episodic, each having skill subcollections.
+                # list_subcollections gives us the child collections of the doc, but we
+                # need the documents inside the episodic collection.  Use raw SDK.
+                pass  # fall through to raw SDK path
+
             with self._firebase._get_client() as client:
-                # episodic is a subcollection: system (col) / intelligence (doc) / episodic (col)
-                # Tenant docs live directly under the episodic collection
                 episodic_ref = (
                     client.collection("system")
                     .document("intelligence")
                     .collection("episodic")
                 )
-                return [doc.id for doc in episodic_ref.list_documents()]
+                tenants = [doc.id for doc in episodic_ref.list_documents()]
+                logger.debug(f"_list_tenants: found {len(tenants)} tenants via list_documents()")
+                return tenants
         except Exception as e:
-            logger.warning(f"Failed to enumerate tenants: {e}")
+            logger.error(f"_list_tenants FAILED: {e}", exc_info=True)
             return []
 
     def _list_skills_for_tenant(self, tenant_id: str) -> List[str]:
-        """List all skill subcollections for a tenant."""
+        """List all skill subcollections for a tenant.
+
+        Falls back to ``firebase_client.list_subcollections`` when available,
+        otherwise uses the raw SDK ``collections()`` call.
+        """
+        doc_path = f"system/intelligence/episodic/{tenant_id}"
         try:
+            if hasattr(self._firebase, 'list_subcollections'):
+                skills = self._firebase.list_subcollections(doc_path)
+                logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via helper")
+                return skills
+
             with self._firebase._get_client() as client:
                 tenant_ref = (
                     client.collection("system")
@@ -296,9 +319,11 @@ class EpisodicMemoryStore:
                     .collection("episodic")
                     .document(tenant_id)
                 )
-                return [col.id for col in tenant_ref.collections()]
+                skills = [col.id for col in tenant_ref.collections()]
+                logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via SDK")
+                return skills
         except Exception as e:
-            logger.warning(f"Failed to enumerate skills for tenant {tenant_id}: {e}")
+            logger.error(f"_list_skills_for_tenant({tenant_id}) FAILED: {e}", exc_info=True)
             return []
 
     def decay_all(self, tenant_id: Optional[str] = None) -> Dict[str, int]:
@@ -388,73 +413,72 @@ class EpisodicMemoryStore:
     ) -> List[EpisodicMemory]:
         """
         Get episodes ready for consolidation into semantic patterns.
-        
-        Episodes are ready when their weight drops below relevance_threshold.
-        
+
+        An episode is ready when it has not been consolidated yet AND either:
+          (a) its decayed weight is below ``relevance_threshold``, OR
+          (b) it is older than 7 days (age-based fallback so episodes that
+              started with low weight or had decay issues still get picked up).
+
         Args:
             tenant_id: Tenant identifier
             skill_name: Name of the skill
             limit: Maximum episodes to return (default: consolidation_threshold)
-            
+
         Returns:
-            List of low-weight episodes ready for consolidation
+            List of episodes ready for consolidation
         """
         with self._lock:
             if limit is None:
                 limit = self._config.consolidation_threshold
-            
+
             collection_path = self._get_collection_path(tenant_id, skill_name)
-            
+            AGE_FALLBACK_DAYS = 7.0
+
             try:
-                # Query for episodes not yet consolidated
-                filters = [
-                    ("consolidated_at", "==", None)
-                ]
-                
-                if hasattr(self._firebase, "query"):
-                    docs = self._firebase.query(
-                        collection=collection_path,
-                        filters=filters,
-                        limit=limit * 3,  # Over-fetch for weight filtering
-                        order_by="created_at",
-                        order_direction="ASCENDING"  # Oldest first
-                    )
-                elif hasattr(self._firebase, "get_collection"):
+                # Fetch all unconsolidated episodes.  We avoid querying for
+                # ``consolidated_at == null`` because Firestore treats missing
+                # fields and explicit null differently; instead we fetch all
+                # and filter in memory.
+                docs = None
+                if hasattr(self._firebase, "get_collection"):
                     docs = self._firebase.get_collection(
                         collection=collection_path,
-                        limit=limit * 3,
+                        limit=limit * 5,
                         order_by="created_at",
                         order_direction="ASCENDING"
                     )
-                else:
-                    return []
-                
+
                 if not docs:
+                    logger.debug(f"get_for_consolidation: no docs in {collection_path}")
                     return []
-                
-                # Filter by weight threshold after decay
+
                 episodes = []
                 for doc in docs:
                     episode = self._doc_to_episode(doc)
                     if episode is None:
                         continue
-                    
-                    # Skip already consolidated
+
+                    # Skip already consolidated (field present and non-null)
                     if episode.consolidated_at is not None:
                         continue
-                    
-                    # Apply decay and check threshold
+
                     episode.weight = self._apply_decay(episode)
-                    
-                    if episode.weight < self._config.relevance_threshold:
+                    age_days = self._calculate_age_days(episode.created_at)
+
+                    # Ready if weight below threshold OR age fallback
+                    if episode.weight < self._config.relevance_threshold or age_days >= AGE_FALLBACK_DAYS:
                         episodes.append(episode)
                         if len(episodes) >= limit:
                             break
-                
+
+                logger.debug(
+                    f"get_for_consolidation({tenant_id}/{skill_name}): "
+                    f"{len(episodes)} ready out of {len(docs)} total docs"
+                )
                 return episodes
-                
+
             except Exception as e:
-                logger.error(f"Error getting episodes for consolidation: {e}")
+                logger.error(f"get_for_consolidation ERROR: {e}", exc_info=True)
                 return []
     
     def mark_consolidated(
