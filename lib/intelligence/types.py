@@ -28,6 +28,15 @@ class Domain(Enum):
     GENERIC = "generic"         # Fallback domain
 
 
+class EpisodeSource(Enum):
+    """Origin of an episodic memory entry."""
+    SKILL_EXECUTION = "skill"
+    JARVIS_INTERACTION = "jarvis"
+    OPERATOR_FEEDBACK = "operator"
+    CLIENT_FEEDBACK = "client"
+    MARKET_OBSERVATION = "market"
+
+
 @dataclass
 class Prediction:
     """A prediction registered before skill execution."""
