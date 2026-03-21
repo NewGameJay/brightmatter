@@ -43,6 +43,8 @@ class ShadowCandidate:
     status: str  # testing | promoted | rejected
     test_outcomes: List[Dict[str, float]] = field(default_factory=list)
     production_error_at_spawn: float = 0.0
+    channel_timing: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    hypothesis: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +54,8 @@ class ShadowCandidate:
             "status": self.status,
             "test_outcomes": self.test_outcomes[-200:],
             "production_error_at_spawn": self.production_error_at_spawn,
+            "channel_timing": self.channel_timing,
+            "hypothesis": self.hypothesis,
         }
 
     @classmethod
@@ -63,6 +67,8 @@ class ShadowCandidate:
             status=d.get("status", "testing"),
             test_outcomes=d.get("test_outcomes", []),
             production_error_at_spawn=d.get("production_error_at_spawn", 0.0),
+            channel_timing=d.get("channel_timing", {}),
+            hypothesis=d.get("hypothesis", ""),
         )
 
 
@@ -165,9 +171,12 @@ class ShadowManager:
         if not weights:
             return None
 
+        channel_timing = self._generate_channel_timing()
+
         self._candidate = ShadowCandidate(
             version=f"shadow-{uuid.uuid4().hex[:8]}",
             weights=weights,
+            channel_timing=channel_timing,
             created_at=datetime.now(timezone.utc).isoformat(),
             status="testing",
             production_error_at_spawn=avg_error,
@@ -227,7 +236,7 @@ class ShadowManager:
         return result
 
     def _promote_candidate(self, improvement: float):
-        """Archive production weights, promote candidate."""
+        """Archive production weights, promote candidate, update channel timing."""
         if not self._candidate:
             return
 
@@ -239,15 +248,21 @@ class ShadowManager:
             "previous_weights": self._production_weights,
             "promoted_at": datetime.now(timezone.utc).isoformat(),
             "production_error_at_spawn": self._candidate.production_error_at_spawn,
+            "channel_timing": self._candidate.channel_timing,
+            "hypothesis": self._candidate.hypothesis,
         }
         self._archive_history(history_entry)
 
         self._production_weights = dict(self._candidate.weights)
         self._apply_weights_to_patterns(self._candidate.weights)
 
+        if self._candidate.channel_timing:
+            self._apply_channel_timing(self._candidate.channel_timing)
+
         logger.info(
             f"Promoted shadow {self._candidate.version} "
-            f"(+{improvement:.3f} improvement)"
+            f"(+{improvement:.3f} improvement, "
+            f"hypothesis='{self._candidate.hypothesis}')"
         )
 
         self._candidate = None
@@ -299,6 +314,60 @@ class ShadowManager:
             logger.debug("No patterns to perturb for shadow candidate")
 
         return weights
+
+    def _generate_channel_timing(self) -> Dict[str, Dict[str, float]]:
+        """Perturb channel timing to explore better measurement windows."""
+        try:
+            from ..adapters.channels import CHANNEL_REGISTRY
+        except ImportError:
+            return {}
+
+        channel_timing: Dict[str, Dict[str, float]] = {}
+        for channel_id, config in CHANNEL_REGISTRY.items():
+            channel_timing[channel_id] = {
+                "measurement_window_hours": config.measurement_window_hours * random.uniform(0.75, 1.25),
+                "full_measurement_days": int(config.full_measurement_days * random.uniform(0.75, 1.25)),
+            }
+        return channel_timing
+
+    def _apply_channel_timing(self, channel_timing: Dict[str, Dict[str, float]]):
+        """Persist promoted channel timing to Firebase and update in-memory registry."""
+        _CHANNEL_TIMING_COLLECTION = "system/intelligence/channel_timing"
+
+        if not self._firebase or not hasattr(self._firebase, "set_document"):
+            return
+
+        for channel_id, timing in channel_timing.items():
+            try:
+                self._firebase.set_document(
+                    _CHANNEL_TIMING_COLLECTION,
+                    channel_id,
+                    {
+                        "channel_id": channel_id,
+                        "measurement_window_hours": timing.get("measurement_window_hours"),
+                        "full_measurement_days": timing.get("full_measurement_days"),
+                        "promoted_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    merge=True,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to persist channel timing for {channel_id}: {e}")
+
+        # Update in-memory channel registry
+        try:
+            from ..adapters.channels import CHANNEL_REGISTRY
+            for channel_id, timing in channel_timing.items():
+                config = CHANNEL_REGISTRY.get(channel_id)
+                if config is not None:
+                    mw = timing.get("measurement_window_hours")
+                    fm = timing.get("full_measurement_days")
+                    if mw is not None:
+                        config.measurement_window_hours = float(mw)
+                    if fm is not None:
+                        config.full_measurement_days = int(fm)
+            logger.info(f"Updated channel timing for {len(channel_timing)} channels")
+        except ImportError:
+            pass
 
     def _apply_weights_to_patterns(self, weights: Dict[str, float]):
         """Apply promoted weights back to semantic patterns."""
