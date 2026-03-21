@@ -167,20 +167,27 @@ class ShadowManager:
         if avg_error <= self._config.error_threshold:
             return None
 
-        weights = self._generate_candidate_weights()
-        if not weights:
-            return None
+        # Two-path candidate generation:
+        # Path 1: Hypothesis from improvement analysis (targeted)
+        # Path 2: Random perturbation (fallback)
+        candidate = self._generate_hypothesis_candidate()
+        if candidate is None:
+            weights = self._generate_candidate_weights()
+            if not weights:
+                return None
+            channel_timing = self._generate_channel_timing()
+            candidate = ShadowCandidate(
+                version=f"shadow-{uuid.uuid4().hex[:8]}",
+                weights=weights,
+                channel_timing=channel_timing,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                status="testing",
+                production_error_at_spawn=avg_error,
+            )
+        else:
+            candidate.production_error_at_spawn = avg_error
 
-        channel_timing = self._generate_channel_timing()
-
-        self._candidate = ShadowCandidate(
-            version=f"shadow-{uuid.uuid4().hex[:8]}",
-            weights=weights,
-            channel_timing=channel_timing,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            status="testing",
-            production_error_at_spawn=avg_error,
-        )
+        self._candidate = candidate
         self._persist_state()
         logger.info(
             f"Spawned shadow candidate {self._candidate.version} "
@@ -279,16 +286,71 @@ class ShadowManager:
             "improvement": improvement,
             "observations": len(self._candidate.test_outcomes),
             "rejected_at": datetime.now(timezone.utc).isoformat(),
+            "channel_timing": self._candidate.channel_timing,
+            "hypothesis": self._candidate.hypothesis,
         }
         self._archive_history(history_entry)
 
         logger.info(
             f"Rejected shadow {self._candidate.version} "
-            f"(improvement {improvement:.3f} < {self._config.min_improvement})"
+            f"(improvement {improvement:.3f} < {self._config.min_improvement}, "
+            f"hypothesis='{self._candidate.hypothesis}')"
         )
 
         self._candidate = None
         self._persist_state()
+
+    def _generate_hypothesis_candidate(self) -> Optional[ShadowCandidate]:
+        """Generate a candidate from improvement analysis (targeted path).
+
+        Uses ImprovementAnalyzer to find systematic failures, then
+        ImprovementProposer to generate a hypothesis. The hypothesis
+        drives targeted weight perturbations instead of random noise.
+        """
+        try:
+            from ..improvement.analyzer import ImprovementAnalyzer
+            from ..improvement.proposer import ImprovementProposer
+
+            analyzer = ImprovementAnalyzer(firebase_client=self._firebase)
+            candidates = analyzer.analyze()
+            if not candidates:
+                return None
+
+            proposer = ImprovementProposer()
+            proposals = proposer.propose(candidates[:3])
+            if not proposals:
+                return None
+
+            best_proposal = proposals[0]
+            hypothesis = best_proposal.description
+
+            # Generate weights biased by the hypothesis
+            weights = self._generate_candidate_weights()
+            if not weights:
+                return None
+
+            # Bias weights for the specific skill that's underperforming
+            skill_name = best_proposal.skill_name
+            if skill_name:
+                for pid, conf in weights.items():
+                    # Reduce confidence for patterns related to the failing skill
+                    # (they're not working well, try something different)
+                    weights[pid] = max(0.05, conf * random.uniform(0.5, 0.9))
+
+            channel_timing = self._generate_channel_timing()
+
+            return ShadowCandidate(
+                version=f"shadow-hyp-{uuid.uuid4().hex[:8]}",
+                weights=weights,
+                channel_timing=channel_timing,
+                hypothesis=hypothesis,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                status="testing",
+            )
+
+        except Exception as e:
+            logger.debug(f"Hypothesis candidate generation failed: {e}")
+            return None
 
     def _generate_candidate_weights(self) -> Dict[str, float]:
         """Perturb current pattern confidences to create candidate weights."""
