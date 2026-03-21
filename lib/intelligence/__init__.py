@@ -28,6 +28,7 @@ from .types import (
     Prediction,
     ProceduralKnowledge,
     SemanticPattern,
+    TrajectoryPoint,
 )
 
 # Memory stores
@@ -797,6 +798,7 @@ __all__ = [
     "Outcome",
     "Guidance",
     "EpisodicMemory",
+    "TrajectoryPoint",
     "SemanticPattern",
     "ProceduralKnowledge",
     
