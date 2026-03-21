@@ -205,6 +205,37 @@ class EpisodicMemory:
 
 
 @dataclass
+class TrajectoryPoint:
+    """A single checkpoint in a pattern's expected trajectory.
+
+    Patterns with trajectories predict how a metric evolves over time
+    (e.g., churn spikes at day 7 then recovers by day 14) instead of
+    recording a single final outcome ratio.
+    """
+    checkpoint_days: int
+    expected_ratio: float
+    confidence: float = 0.5
+    observation_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "checkpoint_days": self.checkpoint_days,
+            "expected_ratio": self.expected_ratio,
+            "confidence": self.confidence,
+            "observation_count": self.observation_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TrajectoryPoint":
+        return cls(
+            checkpoint_days=data.get("checkpoint_days", 0),
+            expected_ratio=data.get("expected_ratio", 1.0),
+            confidence=data.get("confidence", 0.5),
+            observation_count=data.get("observation_count", 0),
+        )
+
+
+@dataclass
 class SemanticPattern:
     """
     A learned pattern in semantic memory.
@@ -215,24 +246,40 @@ class SemanticPattern:
     # Pattern definition
     skill_name: str = ""
     domain: Domain = Domain.GENERIC
-    condition: Dict[str, Any] = field(default_factory=dict)  # When pattern applies
-    recommendation: Dict[str, Any] = field(default_factory=dict)  # What to do
+    condition: Dict[str, Any] = field(default_factory=dict)
+    recommendation: Dict[str, Any] = field(default_factory=dict)
     
     # Learning state
-    confidence: float = 0.5                # Bayesian confidence [0, 1]
-    expected_value: float = 1.0            # Expected Signal/Baseline ratio
-    variance: float = 1.0                  # Uncertainty in expected value
+    confidence: float = 0.5
+    _expected_value: float = 1.0
+    variance: float = 1.0
+    
+    # Trajectory (replaces single expected_value for multi-checkpoint patterns)
+    expected_trajectory: List[TrajectoryPoint] = field(default_factory=list)
+    expected_time_to_target_days: Optional[float] = None
+    variance_days: Optional[float] = None
     
     # Evidence tracking
     evidence_count: int = 0
     successes: int = 0
     failures: int = 0
-    recent_accuracy: float = 0.5           # Rolling 10-episode accuracy
+    recent_accuracy: float = 0.5
     
     # Lifecycle
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    source_episodes: List[str] = field(default_factory=list)  # Episode IDs that contributed
+    source_episodes: List[str] = field(default_factory=list)
+
+    @property
+    def expected_value(self) -> float:
+        """Backward-compatible: returns the final trajectory point's ratio."""
+        if self.expected_trajectory:
+            return self.expected_trajectory[-1].expected_ratio
+        return self._expected_value
+
+    @expected_value.setter
+    def expected_value(self, value: float):
+        self._expected_value = value
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -242,8 +289,11 @@ class SemanticPattern:
             "condition": self.condition,
             "recommendation": self.recommendation,
             "confidence": self.confidence,
-            "expected_value": self.expected_value,
+            "expected_value": self._expected_value,
             "variance": self.variance,
+            "expected_trajectory": [tp.to_dict() for tp in self.expected_trajectory],
+            "expected_time_to_target_days": self.expected_time_to_target_days,
+            "variance_days": self.variance_days,
             "evidence_count": self.evidence_count,
             "successes": self.successes,
             "failures": self.failures,
@@ -261,16 +311,23 @@ class SemanticPattern:
             domain = Domain(domain_value)
         else:
             domain = domain_value
+
+        trajectory = [
+            TrajectoryPoint.from_dict(tp)
+            for tp in data.get("expected_trajectory", [])
+        ]
         
-        return cls(
+        pattern = cls(
             pattern_id=data.get("pattern_id", str(uuid.uuid4())[:12]),
             skill_name=data.get("skill_name", ""),
             domain=domain,
             condition=data.get("condition", {}),
             recommendation=data.get("recommendation", {}),
             confidence=data.get("confidence", 0.5),
-            expected_value=data.get("expected_value", 1.0),
             variance=data.get("variance", 1.0),
+            expected_trajectory=trajectory,
+            expected_time_to_target_days=data.get("expected_time_to_target_days"),
+            variance_days=data.get("variance_days"),
             evidence_count=data.get("evidence_count", 0),
             successes=data.get("successes", 0),
             failures=data.get("failures", 0),
@@ -279,6 +336,8 @@ class SemanticPattern:
             updated_at=data.get("updated_at", datetime.now(timezone.utc).isoformat()),
             source_episodes=data.get("source_episodes", []),
         )
+        pattern._expected_value = data.get("expected_value", 1.0)
+        return pattern
 
 
 @dataclass
@@ -354,6 +413,7 @@ __all__ = [
     "Prediction",
     "Outcome",
     "EpisodicMemory",
+    "TrajectoryPoint",
     "SemanticPattern",
     "ProceduralKnowledge",
 ]

@@ -28,6 +28,7 @@ from .types import (
     Prediction,
     ProceduralKnowledge,
     SemanticPattern,
+    TrajectoryPoint,
 )
 
 # Memory stores
@@ -210,6 +211,14 @@ class IntelligenceEngine:
             Domain.HEALTH: HealthAdapter(),
             Domain.CAMPAIGN: CampaignAdapter(),
         }
+
+        # Load shadow-promoted channel timing overrides from Firebase
+        if firebase_client is not None:
+            try:
+                from .adapters.channels import load_channel_overrides_from_firebase
+                load_channel_overrides_from_firebase(firebase_client)
+            except Exception as e:
+                logger.debug(f"Channel timing override load skipped: {e}")
         
         logger.info("IntelligenceEngine initialized")
 
@@ -789,6 +798,7 @@ __all__ = [
     "Outcome",
     "Guidance",
     "EpisodicMemory",
+    "TrajectoryPoint",
     "SemanticPattern",
     "ProceduralKnowledge",
     

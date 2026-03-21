@@ -243,3 +243,51 @@ SKILL_CHANNEL_MAP: Dict[str, str] = {
 def infer_channel_from_skill(skill_name: str) -> Optional[str]:
     """Infer ``channel_id`` from skill name. Returns ``None`` if ambiguous."""
     return SKILL_CHANNEL_MAP.get(skill_name)
+
+
+def load_channel_overrides_from_firebase(firebase_client) -> int:
+    """Load shadow-promoted channel timing overrides from Firebase.
+
+    Called at startup to apply any previously promoted timing values
+    on top of the static CHANNEL_REGISTRY defaults.
+
+    Returns the number of channels updated.
+    """
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    _CHANNEL_TIMING_COLLECTION = "system/intelligence/channel_timing"
+
+    if firebase_client is None or not hasattr(firebase_client, "get_collection"):
+        return 0
+
+    updated = 0
+    try:
+        docs = firebase_client.get_collection(_CHANNEL_TIMING_COLLECTION)
+        if not docs:
+            return 0
+
+        for doc in docs:
+            d = doc if isinstance(doc, dict) else (
+                doc.to_dict() if hasattr(doc, "to_dict") else {}
+            )
+            channel_id = d.get("channel_id", "")
+            if channel_id not in CHANNEL_REGISTRY:
+                continue
+
+            config = CHANNEL_REGISTRY[channel_id]
+            mw = d.get("measurement_window_hours")
+            fm = d.get("full_measurement_days")
+            if mw is not None:
+                config.measurement_window_hours = float(mw)
+                updated += 1
+            if fm is not None:
+                config.full_measurement_days = int(fm)
+
+        if updated:
+            _logger.info(f"Loaded channel timing overrides for {updated} channels from Firebase")
+
+    except Exception as e:
+        _logger.debug(f"Could not load channel timing overrides: {e}")
+
+    return updated

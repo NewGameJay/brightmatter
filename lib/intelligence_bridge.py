@@ -58,6 +58,9 @@ class SkillGuidance:
         exploration_reason: Why exploration was chosen (if applicable)
         patterns_used: IDs of semantic patterns that informed guidance
         domain: Business domain for the skill
+        predicted_outcome: pattern.expected_value x client baseline
+        predicted_baseline: Client's current metric from Phase 0 data
+        pattern_expected_value: Raw ratio from the matched pattern
     """
     parameters: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.5
@@ -66,6 +69,9 @@ class SkillGuidance:
     exploration_reason: str = ""
     patterns_used: List[str] = field(default_factory=list)
     domain: "Domain" = None
+    predicted_outcome: Optional[float] = None
+    predicted_baseline: Optional[float] = None
+    pattern_expected_value: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -77,6 +83,9 @@ class SkillGuidance:
             "exploration_reason": self.exploration_reason,
             "patterns_used": self.patterns_used,
             "domain": self.domain.value if self.domain else "generic",
+            "predicted_outcome": self.predicted_outcome,
+            "predicted_baseline": self.predicted_baseline,
+            "pattern_expected_value": self.pattern_expected_value,
         }
 
     @classmethod
@@ -85,11 +94,14 @@ class SkillGuidance:
         return cls(
             parameters=guidance.parameters,
             confidence=guidance.confidence,
-            expected_value=1.0 - guidance.uncertainty,  # Convert uncertainty to expected value
+            expected_value=1.0 - guidance.uncertainty,
             is_exploration=guidance.is_exploration,
             exploration_reason=guidance.exploration_reason,
             patterns_used=guidance.patterns_used,
             domain=domain,
+            predicted_outcome=guidance.predicted_outcome,
+            predicted_baseline=guidance.predicted_baseline,
+            pattern_expected_value=guidance.pattern_expected_value,
         )
 
 
@@ -491,8 +503,8 @@ class IntelligenceBridge:
         skill_name: str,
         client_id: str,
         guidance: SkillGuidance,
-        expected_signal: float = 1.0,
-        expected_baseline: float = 1.0,
+        expected_signal: Optional[float] = None,
+        expected_baseline: Optional[float] = None,
         context: Optional[Dict[str, Any]] = None
     ) -> str:
         """
@@ -501,12 +513,17 @@ class IntelligenceBridge:
         Call this before skill execution to enable learning. The returned
         prediction_id should be passed to complete_tracking() after execution.
 
+        When ``expected_signal`` or ``expected_baseline`` are None (the default),
+        the values from guidance.predicted_outcome / guidance.predicted_baseline
+        are used. This ensures the learning loop measures against the pattern's
+        prediction rather than a manual override.
+
         Args:
             skill_name: Name of the skill being executed
             client_id: Client/tenant identifier
             guidance: Guidance object from get_skill_guidance()
-            expected_signal: Expected outcome signal (default 1.0)
-            expected_baseline: Expected baseline for comparison (default 1.0)
+            expected_signal: Expected outcome signal (uses guidance prediction if None)
+            expected_baseline: Expected baseline for comparison (uses guidance prediction if None)
             context: Additional context at prediction time
 
         Returns:
@@ -518,11 +535,22 @@ class IntelligenceBridge:
             ...     "lifecycle-audit",
             ...     "acme-corp",
             ...     guidance,
-            ...     expected_signal=50,  # expect to find 50 issues
-            ...     expected_baseline=1.0
             ... )
         """
         context = context or {}
+
+        if expected_signal is None:
+            expected_signal = (
+                guidance.predicted_outcome
+                if guidance.predicted_outcome is not None
+                else 1.0
+            )
+        if expected_baseline is None:
+            expected_baseline = (
+                guidance.predicted_baseline
+                if guidance.predicted_baseline is not None
+                else 1.0
+            )
 
         # Infer marketing channel from skill name
         channel_id = ""
@@ -835,15 +863,59 @@ class IntelligenceBridge:
                 except Exception as e:
                     logger.error(f"Failed to store deferred episode: {e}")
 
+            # Compute three-gate score and learning_signal_quality
+            three_gate_score = None
+            learning_signal_quality = 1.0
+            try:
+                from lib.intelligence.outcomes.three_gate import ThreeGateScorer, ThreeGateScore, ParameterClassification
+                scorer = ThreeGateScorer()
+
+                channel_id = pending.channel_id or ""
+                channel_config = None
+                if channel_id:
+                    try:
+                        from lib.intelligence.adapters.channels import get_channel_config
+                        channel_config = get_channel_config(channel_id)
+                    except ImportError:
+                        pass
+
+                gate_3 = scorer.score_gate_3(
+                    platform_metrics or {},
+                    channel_config=channel_config,
+                )
+                tgs = ThreeGateScore(
+                    tracking_id=pending.tracking_id,
+                    skill_name=pending.skill_name,
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    gate_3_market=gate_3,
+                )
+
+                param_classifications = []
+                guidance_params = pending.prediction.get("context", {}).get("_parameter_classifications", [])
+                for pc in guidance_params:
+                    if isinstance(pc, dict):
+                        param_classifications.append(ParameterClassification.from_dict(pc))
+                tgs.parameters = param_classifications
+                tgs.openness_ratio = scorer.compute_openness_ratio(param_classifications)
+
+                tgs = scorer.compute_compound(tgs)
+                three_gate_score = tgs
+                learning_signal_quality = tgs.learning_signal_quality if tgs.learning_signal_quality > 0 else 1.0
+            except Exception as e:
+                logger.debug(f"Three-gate scoring skipped: {e}")
+
             learning_result = self.engine.learner.learn_from_outcome(
                 prediction=prediction,
                 outcome=outcome,
+                learning_weight=learning_signal_quality,
             )
 
             logger.info(
                 f"Deferred outcome closed for {prediction_id}: "
                 f"classification={projection_classification}, "
-                f"patterns_updated={learning_result.get('patterns_updated', 0)}"
+                f"patterns_updated={learning_result.get('patterns_updated', 0)}, "
+                f"learning_signal_quality={learning_signal_quality:.3f}"
             )
 
             return LearningResult(

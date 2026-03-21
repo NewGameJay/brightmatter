@@ -83,11 +83,21 @@ class ImprovementProposer:
     def propose(
         self, candidates: List[ImprovementCandidate]
     ) -> List[ImprovementProposal]:
-        """Generate proposals for each improvement candidate."""
+        """Generate proposals for each improvement candidate.
+
+        Gathers external context for each candidate before generating
+        proposals, enriching the evidence summary with temporal and
+        cross-client failure patterns.
+        """
         proposals: List[ImprovementProposal] = []
         now = datetime.now(timezone.utc).isoformat()
 
         for candidate in candidates:
+            # Enrich candidate with external context
+            external_ctx = self._gather_external_context(candidate)
+            if external_ctx and external_ctx != "No external context available":
+                candidate.pattern_description += f"\n\nExternal context:\n{external_ctx}"
+
             if candidate.pattern_type == "under_projection":
                 proposals.extend(self._propose_for_under_projection(candidate, now))
             elif candidate.pattern_type == "negative_feedback":
@@ -228,6 +238,58 @@ class ImprovementProposer:
                 if skill_name.split("-")[0] in agent_file.name.lower():
                     return str(agent_file.relative_to(self._project_root))
         return f"agents/workers/{skill_name}"
+
+    def _gather_external_context(
+        self, candidate: ImprovementCandidate, lookback_days: int = 14
+    ) -> str:
+        """Gather external context to inform the proposal.
+
+        Checks episode context for failure patterns and temporal clustering.
+        Stub-ready for MH-OS API integration when available.
+        """
+        context_parts: List[str] = []
+
+        # Episode-level context from failure evidence
+        for evidence in candidate.evidence:
+            if isinstance(evidence, dict):
+                ctx = evidence.get("context", {})
+                if ctx:
+                    context_parts.append(f"Episode context: {ctx}")
+
+        # Temporal pattern in failures
+        dates = [
+            e.get("closed_at", "")[:10]
+            for e in candidate.evidence
+            if isinstance(e, dict) and e.get("closed_at")
+        ]
+        if dates:
+            unique_dates = sorted(set(dates))
+            context_parts.append(f"Failure dates: {', '.join(unique_dates)}")
+            if len(unique_dates) >= 2:
+                context_parts.append(
+                    f"Failure date spread: {unique_dates[0]} to {unique_dates[-1]}"
+                )
+
+        # Client segments in failures
+        clients = [
+            e.get("client_id", "")
+            for e in candidate.evidence
+            if isinstance(e, dict) and e.get("client_id")
+        ]
+        if clients:
+            unique_clients = sorted(set(clients))
+            context_parts.append(f"Affected clients: {', '.join(unique_clients[:5])}")
+
+        # MH-OS integration stub (ready for merge)
+        # When MH-OS API is available:
+        # mh_os_signals = mh_os_client.get_signals(
+        #     source="daily-pulse",
+        #     date_range=(start_date, end_date),
+        #     filters={"skill": candidate.skill_name},
+        # )
+        # context_parts.append(f"Business signals: {mh_os_signals}")
+
+        return "\n".join(context_parts) or "No external context available"
 
     def _summarize_evidence(self, candidate: ImprovementCandidate) -> str:
         """Create a brief evidence summary from the candidate."""

@@ -26,7 +26,7 @@ from statistics import mean, mode, StatisticsError
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .episodic import EpisodicMemoryStore
-from ..types import Domain, SemanticPattern
+from ..types import Domain, SemanticPattern, TrajectoryPoint
 
 # These imports will work once the stores are implemented
 # Using TYPE_CHECKING to allow forward references for type hints
@@ -305,17 +305,53 @@ class MemoryConsolidationManager:
                         f"{len(ready_episodes)} >= {self._config.min_episodes_for_consolidation}"
                     )
                     
-                    # Step 2E: Consolidate episodes into semantic patterns
-                    if hasattr(self._semantic, 'consolidate_episodes'):
-                        logger.info(f"[CONSOLIDATION] Step 2E: calling semantic.consolidate_episodes for {tid}/{skill_name}")
-                        result = self._semantic.consolidate_episodes(
-                            tenant_id=tid,
-                            skill_name=skill_name,
-                            episodes=ready_episodes
+                    # Step 2E: Check for context-aware splitting before consolidation
+                    split = self._detect_context_split(ready_episodes)
+                    if split:
+                        split_key = split["split_key"]
+                        logger.info(
+                            f"[CONSOLIDATION] Step 2E: split detected on '{split_key}' "
+                            f"(explains {split['variance_explained']:.0%} of variance) "
+                            f"for {tid}/{skill_name}"
                         )
-                        logger.info(f"[CONSOLIDATION] Step 2E: result={result}")
-                        stats["patterns_created"] += result.get("created", 0)
-                        stats["patterns_updated"] += result.get("updated", 0)
+                        sub_groups = self._split_episodes_by_context(ready_episodes, split_key)
+                        for group_name, group_episodes in sub_groups.items():
+                            if len(group_episodes) < self._config.min_episodes_for_consolidation:
+                                continue
+                            if hasattr(self._semantic, 'consolidate_episodes'):
+                                result = self._semantic.consolidate_episodes(
+                                    tenant_id=tid,
+                                    skill_name=skill_name,
+                                    episodes=group_episodes,
+                                )
+                                stats["patterns_created"] += result.get("created", 0)
+                                stats["patterns_updated"] += result.get("updated", 0)
+                                logger.info(
+                                    f"[CONSOLIDATION] Split group '{group_name}': "
+                                    f"created={result.get('created', 0)}, "
+                                    f"updated={result.get('updated', 0)}"
+                                )
+                    else:
+                        # No split detected — consolidate as single group
+                        if hasattr(self._semantic, 'consolidate_episodes'):
+                            logger.info(f"[CONSOLIDATION] Step 2E: calling semantic.consolidate_episodes for {tid}/{skill_name}")
+                            result = self._semantic.consolidate_episodes(
+                                tenant_id=tid,
+                                skill_name=skill_name,
+                                episodes=ready_episodes
+                            )
+                            logger.info(f"[CONSOLIDATION] Step 2E: result={result}")
+                            stats["patterns_created"] += result.get("created", 0)
+                            stats["patterns_updated"] += result.get("updated", 0)
+
+                    # Step 2E.2: Build trajectory from multi-checkpoint episodes
+                    trajectory = self._build_trajectory_from_episodes(ready_episodes)
+                    if trajectory:
+                        self._apply_trajectory_to_patterns(tid, skill_name, trajectory)
+                        logger.info(
+                            f"[CONSOLIDATION] Built trajectory with {len(trajectory)} "
+                            f"points for {tid}/{skill_name}"
+                        )
                     else:
                         logger.warning("[CONSOLIDATION] Step 2E: SKIP — semantic store missing consolidate_episodes")
                         continue
@@ -649,6 +685,223 @@ class MemoryConsolidationManager:
         
         return description
     
+    def _build_trajectory_from_episodes(
+        self,
+        episodes: List[Any],
+    ) -> List[TrajectoryPoint]:
+        """Build a trajectory from episodes that carry checkpoint_day metadata.
+
+        Groups episodes by checkpoint_day and computes the average
+        observed/baseline ratio for each checkpoint, producing a list of
+        TrajectoryPoints sorted by checkpoint day.
+        """
+        from collections import defaultdict
+
+        day_ratios: Dict[int, List[float]] = defaultdict(list)
+
+        for ep in episodes:
+            meta = {}
+            if hasattr(ep, "outcome") and hasattr(ep.outcome, "metadata"):
+                meta = ep.outcome.metadata or {}
+            checkpoint_day = meta.get("checkpoint_day")
+            if checkpoint_day is None:
+                continue
+            try:
+                checkpoint_day = int(checkpoint_day)
+            except (TypeError, ValueError):
+                continue
+
+            baseline = ep.outcome.observed_baseline if ep.outcome.observed_baseline > 0 else 1.0
+            ratio = ep.outcome.observed_signal / baseline
+            day_ratios[checkpoint_day].append(ratio)
+
+        if not day_ratios:
+            return []
+
+        trajectory = []
+        for day in sorted(day_ratios):
+            ratios = day_ratios[day]
+            avg_ratio = sum(ratios) / len(ratios)
+            trajectory.append(TrajectoryPoint(
+                checkpoint_days=day,
+                expected_ratio=avg_ratio,
+                observation_count=len(ratios),
+                confidence=min(1.0, len(ratios) / 10),
+            ))
+
+        return trajectory
+
+    def _apply_trajectory_to_patterns(
+        self,
+        tenant_id: str,
+        skill_name: str,
+        trajectory: List[TrajectoryPoint],
+    ) -> None:
+        """Apply a built trajectory to existing semantic patterns for a skill."""
+        try:
+            for domain in Domain:
+                patterns = self._semantic.retrieve_patterns(
+                    skill_name=skill_name,
+                    domain=domain,
+                    limit=20,
+                )
+                for pattern in patterns:
+                    if not pattern.expected_trajectory:
+                        pattern.expected_trajectory = trajectory
+                    else:
+                        for new_tp in trajectory:
+                            matched = False
+                            for existing_tp in pattern.expected_trajectory:
+                                if existing_tp.checkpoint_days == new_tp.checkpoint_days:
+                                    existing_tp.expected_ratio = (
+                                        0.8 * existing_tp.expected_ratio
+                                        + 0.2 * new_tp.expected_ratio
+                                    )
+                                    existing_tp.observation_count += new_tp.observation_count
+                                    existing_tp.confidence = min(
+                                        1.0, existing_tp.observation_count / 10
+                                    )
+                                    matched = True
+                                    break
+                            if not matched:
+                                pattern.expected_trajectory.append(new_tp)
+                        pattern.expected_trajectory.sort(key=lambda t: t.checkpoint_days)
+
+                    if hasattr(pattern, "expected_time_to_target_days"):
+                        if pattern.expected_trajectory:
+                            pattern.expected_time_to_target_days = float(
+                                pattern.expected_trajectory[-1].checkpoint_days
+                            )
+
+                    if hasattr(self._semantic, "_persist_pattern"):
+                        self._semantic._persist_pattern(pattern, tenant_id)
+
+        except Exception as e:
+            logger.debug(f"Failed to apply trajectory to patterns: {e}")
+
+    def _detect_context_split(
+        self,
+        episodes: List[Any],
+        min_variance_explained: float = 0.30,
+        min_group_size: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """Detect whether splitting episodes by a context key reduces outcome variance.
+
+        Tests each context key as a potential split point. A split is valid when:
+        - A single key explains > ``min_variance_explained`` (30%) of outcome variance
+        - Both groups have at least ``min_group_size`` episodes
+
+        Returns the best split or None if no significant split found.
+        """
+        if len(episodes) < min_group_size * 2:
+            return None
+
+        # Collect outcome ratios
+        ratios = []
+        for ep in episodes:
+            baseline = ep.outcome.observed_baseline if ep.outcome.observed_baseline > 0 else 1.0
+            ratios.append(ep.outcome.observed_signal / baseline)
+
+        if not ratios:
+            return None
+
+        overall_mean = sum(ratios) / len(ratios)
+        total_variance = sum((r - overall_mean) ** 2 for r in ratios)
+        if total_variance == 0:
+            return None
+
+        # Collect all context keys
+        context_keys: set = set()
+        for ep in episodes:
+            ctx = ep.prediction.context or {}
+            for k in ctx:
+                if not k.startswith("_"):
+                    context_keys.add(k)
+
+        best_split = None
+        best_variance_explained = 0.0
+
+        for key in context_keys:
+            # Group episodes by this key's value
+            groups: Dict[Any, List[float]] = defaultdict(list)
+            for ep, ratio in zip(episodes, ratios):
+                val = (ep.prediction.context or {}).get(key, "__missing__")
+                # For numeric values, bucket into "high" and "low"
+                if isinstance(val, (int, float)):
+                    vals = [
+                        (ep2.prediction.context or {}).get(key)
+                        for ep2 in episodes
+                        if isinstance((ep2.prediction.context or {}).get(key), (int, float))
+                    ]
+                    if vals:
+                        median_val = sorted(vals)[len(vals) // 2]
+                        val = "high" if val >= median_val else "low"
+                groups[str(val)].append(ratio)
+
+            # Skip keys that don't produce two valid groups
+            valid_groups = {k: v for k, v in groups.items() if len(v) >= min_group_size}
+            if len(valid_groups) < 2:
+                continue
+
+            # Compute within-group variance (SSW)
+            ssw = 0.0
+            for group_ratios in valid_groups.values():
+                group_mean = sum(group_ratios) / len(group_ratios)
+                ssw += sum((r - group_mean) ** 2 for r in group_ratios)
+
+            variance_explained = 1.0 - (ssw / total_variance) if total_variance > 0 else 0.0
+
+            if variance_explained > best_variance_explained and variance_explained >= min_variance_explained:
+                best_variance_explained = variance_explained
+                group_stats = {}
+                for gname, gratios in valid_groups.items():
+                    gmean = sum(gratios) / len(gratios)
+                    group_stats[gname] = {
+                        "count": len(gratios),
+                        "mean_ratio": gmean,
+                    }
+                best_split = {
+                    "split_key": key,
+                    "variance_explained": variance_explained,
+                    "groups": group_stats,
+                }
+
+        return best_split
+
+    def _split_episodes_by_context(
+        self,
+        episodes: List[Any],
+        split_key: str,
+    ) -> Dict[str, List[Any]]:
+        """Split episodes into groups by the value of a context key."""
+        groups: Dict[str, List[Any]] = defaultdict(list)
+
+        # Detect if values are numeric (need median bucketing)
+        values = [
+            (ep.prediction.context or {}).get(split_key)
+            for ep in episodes
+        ]
+        numeric_values = [v for v in values if isinstance(v, (int, float))]
+
+        if len(numeric_values) > len(values) / 2:
+            # Numeric key: split at median
+            sorted_nums = sorted(numeric_values)
+            median_val = sorted_nums[len(sorted_nums) // 2]
+            for ep in episodes:
+                val = (ep.prediction.context or {}).get(split_key)
+                if isinstance(val, (int, float)):
+                    group_name = "high" if val >= median_val else "low"
+                else:
+                    group_name = "__other__"
+                groups[group_name].append(ep)
+        else:
+            # Categorical key
+            for ep in episodes:
+                val = (ep.prediction.context or {}).get(split_key, "__missing__")
+                groups[str(val)].append(ep)
+
+        return dict(groups)
+
     def _get_all_tenants(self) -> List[str]:
         """
         Get all tenant IDs from Firebase.

@@ -110,6 +110,30 @@ class FeedbackRequest(BaseModel):
     user_correction: Optional[str] = None
 
 
+class StartTrackingRequest(BaseModel):
+    skill_name: str
+    client_id: str
+    expected_signal: Optional[float] = None
+    expected_baseline: Optional[float] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+    guidance: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CompleteTrackingRequest(BaseModel):
+    tracking_id: str
+    observed_signal: float = 0.0
+    goal_completed: bool = False
+    business_impact: float = 0.0
+    deferred: bool = False
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModuleConsolidateRequest(BaseModel):
+    module_id: str
+    client_id: str
+    execution_data: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ConsolidationRequest(BaseModel):
     tenant_id: Optional[str] = None
 
@@ -235,9 +259,18 @@ async def get_guidance(
         domain=d,
     )
 
+    guidance_dict = guidance.to_dict() if hasattr(guidance, "to_dict") else {}
+
     return {
         "skill_name": skill_name,
-        "guidance": guidance.to_dict() if hasattr(guidance, "to_dict") else str(guidance),
+        "guidance": guidance_dict,
+        "prediction": {
+            "predicted_outcome": guidance_dict.get("predicted_outcome"),
+            "predicted_baseline": guidance_dict.get("predicted_baseline"),
+            "pattern_expected_value": guidance_dict.get("pattern_expected_value"),
+            "confidence": guidance_dict.get("confidence", 0.5),
+            "is_exploration": guidance_dict.get("is_exploration", True),
+        },
     }
 
 
@@ -280,6 +313,79 @@ async def run_consolidation(req: ConsolidationRequest):
     stats = engine.run_consolidation(tenant_id=req.tenant_id)
 
     return {"status": "completed", "stats": stats}
+
+
+@app.post("/api/v1/tracking/start", dependencies=[Depends(_verify_api_key)])
+async def start_tracking(req: StartTrackingRequest):
+    """Register a prediction and start tracking a skill execution."""
+    bridge = _get_bridge()
+    from lib.intelligence_bridge import SkillGuidance
+
+    guidance_data = req.guidance or {}
+    sg = SkillGuidance(
+        parameters=guidance_data.get("parameters", {}),
+        confidence=guidance_data.get("confidence", 0.5),
+        expected_value=guidance_data.get("expected_value", 1.0),
+        is_exploration=guidance_data.get("is_exploration", True),
+        exploration_reason=guidance_data.get("exploration_reason", ""),
+        patterns_used=guidance_data.get("patterns_used", []),
+        predicted_outcome=guidance_data.get("predicted_outcome"),
+        predicted_baseline=guidance_data.get("predicted_baseline"),
+        pattern_expected_value=guidance_data.get("pattern_expected_value"),
+    )
+
+    tracking_id = bridge.start_tracking(
+        skill_name=req.skill_name,
+        client_id=req.client_id,
+        guidance=sg,
+        expected_signal=req.expected_signal,
+        expected_baseline=req.expected_baseline,
+        context=req.context,
+    )
+
+    return {"tracking_id": tracking_id}
+
+
+@app.post("/api/v1/tracking/complete", dependencies=[Depends(_verify_api_key)])
+async def complete_tracking(req: CompleteTrackingRequest):
+    """Record outcome after execution and optionally defer learning."""
+    bridge = _get_bridge()
+
+    result = bridge.complete_tracking(
+        tracking_id=req.tracking_id,
+        result={"signal": req.observed_signal},
+        metrics=req.metrics,
+        goal_completed=req.goal_completed,
+        business_impact=req.business_impact,
+        deferred=req.deferred,
+    )
+
+    return {"tracking_id": req.tracking_id, "result": result.to_dict()}
+
+
+@app.post("/api/v1/modules/consolidate", dependencies=[Depends(_verify_api_key)])
+async def consolidate_module(req: ModuleConsolidateRequest):
+    """Extract learnings from a completed module execution."""
+    bridge = _get_bridge()
+
+    stats = bridge.consolidate_from_module(
+        module_id=req.module_id,
+        client_id=req.client_id,
+        execution_data=req.execution_data,
+    )
+
+    return {"status": "completed", "stats": stats}
+
+
+@app.post("/api/v1/checkpoints/process", dependencies=[Depends(_verify_api_key)])
+async def process_checkpoints():
+    """Process all due outcome checkpoints. Called by cron."""
+    bridge = _get_bridge()
+    engine = _get_engine()
+    from lib.intelligence.outcomes.checkpoint_processor import CheckpointProcessor
+    processor = CheckpointProcessor(engine._firebase, bridge)
+    results = processor.process_all_due()
+    return {"status": "completed", "results": results}
 
 
 @app.get("/api/v1/patterns/{skill_name}", dependencies=[Depends(_verify_api_key)])

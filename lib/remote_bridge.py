@@ -109,11 +109,27 @@ class RemoteIntelligenceBridge:
         skill_name: str,
         client_id: str,
         guidance: Any = None,
-        expected_signal: float = 1.0,
-        expected_baseline: float = 1.0,
+        expected_signal: Optional[float] = None,
+        expected_baseline: Optional[float] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        tracking_id = str(uuid.uuid4())[:12]
+        guidance_dict = {}
+        if guidance is not None:
+            if hasattr(guidance, "to_dict"):
+                guidance_dict = guidance.to_dict()
+            elif isinstance(guidance, dict):
+                guidance_dict = guidance
+
+        resp = self._request("POST", "/api/v1/tracking/start", body={
+            "skill_name": skill_name,
+            "client_id": client_id,
+            "expected_signal": expected_signal,
+            "expected_baseline": expected_baseline,
+            "context": context or {},
+            "guidance": guidance_dict,
+        })
+        tracking_id = resp.get("tracking_id", str(uuid.uuid4())[:12])
+
         self._tracking[tracking_id] = {
             "skill_name": skill_name,
             "client_id": client_id,
@@ -130,32 +146,32 @@ class RemoteIntelligenceBridge:
         observed_signal: float = 0.0,
         goal_completed: bool = False,
         result: Optional[Dict[str, Any]] = None,
+        deferred: bool = False,
+        business_impact: float = 0.0,
         **kwargs,
     ) -> Dict[str, Any]:
-        info = self._tracking.pop(tracking_id, {})
-        if not info:
-            logger.warning(f"Unknown tracking_id: {tracking_id}")
-            return {}
+        self._tracking.pop(tracking_id, {})
 
-        resp = self._request("POST", "/api/v1/episodes/write", body={
-            "skill_name": info["skill_name"],
-            "tenant_id": info["client_id"],
-            "expected_signal": info["expected_signal"],
-            "expected_baseline": info["expected_baseline"],
+        resp = self._request("POST", "/api/v1/tracking/complete", body={
+            "tracking_id": tracking_id,
             "observed_signal": observed_signal,
             "goal_completed": goal_completed,
-            "context": info.get("context", {}),
-            "metadata": kwargs,
+            "business_impact": business_impact,
+            "deferred": deferred,
+            "metrics": kwargs,
         })
         return resp
 
     def close_deferred_outcome(
         self,
         prediction_id: str,
-        observed_signal: float,
+        client_id: str = "",
+        observed_signal: float = 0.0,
+        business_impact: float = 0.0,
+        platform_metrics: Optional[Dict[str, Any]] = None,
+        projection_classification: Optional[str] = None,
         observed_baseline: Optional[float] = None,
         goal_completed: bool = False,
-        business_impact: float = 0.0,
     ) -> Dict[str, Any]:
         return self._request("POST", "/api/v1/outcomes/record", body={
             "prediction_id": prediction_id,
@@ -163,7 +179,26 @@ class RemoteIntelligenceBridge:
             "observed_baseline": observed_baseline,
             "goal_completed": goal_completed,
             "business_impact": business_impact,
+            "metadata": {
+                "_platform_metrics": platform_metrics or {},
+                "_projection_classification": projection_classification,
+            },
         })
+
+    def consolidate_from_module(
+        self,
+        module_id: str,
+        client_id: str,
+        execution_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return self._request("POST", "/api/v1/modules/consolidate", body={
+            "module_id": module_id,
+            "client_id": client_id,
+            "execution_data": execution_data or {},
+        })
+
+    def process_checkpoints(self) -> Dict[str, Any]:
+        return self._request("POST", "/api/v1/checkpoints/process")
 
     def run_consolidation(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         return self._request("POST", "/api/v1/consolidation/run", body={
