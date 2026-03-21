@@ -863,15 +863,59 @@ class IntelligenceBridge:
                 except Exception as e:
                     logger.error(f"Failed to store deferred episode: {e}")
 
+            # Compute three-gate score and learning_signal_quality
+            three_gate_score = None
+            learning_signal_quality = 1.0
+            try:
+                from lib.intelligence.outcomes.three_gate import ThreeGateScorer, ThreeGateScore, ParameterClassification
+                scorer = ThreeGateScorer()
+
+                channel_id = pending.channel_id or ""
+                channel_config = None
+                if channel_id:
+                    try:
+                        from lib.intelligence.adapters.channels import get_channel_config
+                        channel_config = get_channel_config(channel_id)
+                    except ImportError:
+                        pass
+
+                gate_3 = scorer.score_gate_3(
+                    platform_metrics or {},
+                    channel_config=channel_config,
+                )
+                tgs = ThreeGateScore(
+                    tracking_id=pending.tracking_id,
+                    skill_name=pending.skill_name,
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    gate_3_market=gate_3,
+                )
+
+                param_classifications = []
+                guidance_params = pending.prediction.get("context", {}).get("_parameter_classifications", [])
+                for pc in guidance_params:
+                    if isinstance(pc, dict):
+                        param_classifications.append(ParameterClassification.from_dict(pc))
+                tgs.parameters = param_classifications
+                tgs.openness_ratio = scorer.compute_openness_ratio(param_classifications)
+
+                tgs = scorer.compute_compound(tgs)
+                three_gate_score = tgs
+                learning_signal_quality = tgs.learning_signal_quality if tgs.learning_signal_quality > 0 else 1.0
+            except Exception as e:
+                logger.debug(f"Three-gate scoring skipped: {e}")
+
             learning_result = self.engine.learner.learn_from_outcome(
                 prediction=prediction,
                 outcome=outcome,
+                learning_weight=learning_signal_quality,
             )
 
             logger.info(
                 f"Deferred outcome closed for {prediction_id}: "
                 f"classification={projection_classification}, "
-                f"patterns_updated={learning_result.get('patterns_updated', 0)}"
+                f"patterns_updated={learning_result.get('patterns_updated', 0)}, "
+                f"learning_signal_quality={learning_signal_quality:.3f}"
             )
 
             return LearningResult(

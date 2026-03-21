@@ -69,7 +69,8 @@ class Learner:
     def learn_from_outcome(
         self,
         prediction: Prediction,
-        outcome: Outcome
+        outcome: Outcome,
+        learning_weight: float = 1.0,
     ) -> Dict[str, Any]:
         """
         Main learning method. Updates patterns based on observed outcomes.
@@ -80,21 +81,29 @@ class Learner:
         Args:
             prediction: The prediction that was made
             outcome: The observed outcome
+            learning_weight: Weight from ThreeGateScorer's learning_signal_quality.
+                Strategies with more open parameters produce stronger learning
+                signals (weight closer to 1.0). Fully locked strategies produce
+                weaker signals (weight closer to 0.0).
             
         Returns:
             Dict with:
             - patterns_updated: int - number of patterns updated
             - drift_detected: bool - whether drift was detected
             - drift_skill: Optional[str] - skill name if drift detected
+            - learning_weight: float - weight applied to this update
         """
         result = {
             "patterns_updated": 0,
             "drift_detected": False,
             "drift_skill": None,
+            "learning_weight": learning_weight,
         }
+
+        # Clamp learning_weight to [0.05, 1.0] to avoid zero-updates
+        learning_weight = max(0.05, min(1.0, learning_weight))
         
         # Step 1: Calculate prediction error
-        # Handle division by zero for ratios
         if prediction.expected_baseline == 0:
             expected_ratio = prediction.expected_signal
         else:
@@ -106,6 +115,12 @@ class Learner:
             observed_ratio = outcome.observed_signal / outcome.observed_baseline
         
         error = observed_ratio - expected_ratio
+
+        # Apply learning_weight: scale the effective observed_ratio toward
+        # the expected value for low-quality signals (locked parameters).
+        weighted_observed_ratio = (
+            expected_ratio + (observed_ratio - expected_ratio) * learning_weight
+        )
         
         # Step 2: Determine success
         success = outcome.goal_completed
@@ -116,7 +131,7 @@ class Learner:
                 pattern_id=pattern_id,
                 domain=prediction.domain,
                 success=success,
-                observed_ratio=observed_ratio
+                observed_ratio=weighted_observed_ratio
             )
             result["patterns_updated"] += 1
         
