@@ -26,7 +26,7 @@ from statistics import mean, mode, StatisticsError
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .episodic import EpisodicMemoryStore
-from ..types import Domain, SemanticPattern
+from ..types import Domain, SemanticPattern, TrajectoryPoint
 
 # These imports will work once the stores are implemented
 # Using TYPE_CHECKING to allow forward references for type hints
@@ -316,6 +316,15 @@ class MemoryConsolidationManager:
                         logger.info(f"[CONSOLIDATION] Step 2E: result={result}")
                         stats["patterns_created"] += result.get("created", 0)
                         stats["patterns_updated"] += result.get("updated", 0)
+
+                    # Step 2E.2: Build trajectory from multi-checkpoint episodes
+                    trajectory = self._build_trajectory_from_episodes(ready_episodes)
+                    if trajectory:
+                        self._apply_trajectory_to_patterns(tid, skill_name, trajectory)
+                        logger.info(
+                            f"[CONSOLIDATION] Built trajectory with {len(trajectory)} "
+                            f"points for {tid}/{skill_name}"
+                        )
                     else:
                         logger.warning("[CONSOLIDATION] Step 2E: SKIP — semantic store missing consolidate_episodes")
                         continue
@@ -649,6 +658,100 @@ class MemoryConsolidationManager:
         
         return description
     
+    def _build_trajectory_from_episodes(
+        self,
+        episodes: List[Any],
+    ) -> List[TrajectoryPoint]:
+        """Build a trajectory from episodes that carry checkpoint_day metadata.
+
+        Groups episodes by checkpoint_day and computes the average
+        observed/baseline ratio for each checkpoint, producing a list of
+        TrajectoryPoints sorted by checkpoint day.
+        """
+        from collections import defaultdict
+
+        day_ratios: Dict[int, List[float]] = defaultdict(list)
+
+        for ep in episodes:
+            meta = {}
+            if hasattr(ep, "outcome") and hasattr(ep.outcome, "metadata"):
+                meta = ep.outcome.metadata or {}
+            checkpoint_day = meta.get("checkpoint_day")
+            if checkpoint_day is None:
+                continue
+            try:
+                checkpoint_day = int(checkpoint_day)
+            except (TypeError, ValueError):
+                continue
+
+            baseline = ep.outcome.observed_baseline if ep.outcome.observed_baseline > 0 else 1.0
+            ratio = ep.outcome.observed_signal / baseline
+            day_ratios[checkpoint_day].append(ratio)
+
+        if not day_ratios:
+            return []
+
+        trajectory = []
+        for day in sorted(day_ratios):
+            ratios = day_ratios[day]
+            avg_ratio = sum(ratios) / len(ratios)
+            trajectory.append(TrajectoryPoint(
+                checkpoint_days=day,
+                expected_ratio=avg_ratio,
+                observation_count=len(ratios),
+                confidence=min(1.0, len(ratios) / 10),
+            ))
+
+        return trajectory
+
+    def _apply_trajectory_to_patterns(
+        self,
+        tenant_id: str,
+        skill_name: str,
+        trajectory: List[TrajectoryPoint],
+    ) -> None:
+        """Apply a built trajectory to existing semantic patterns for a skill."""
+        try:
+            for domain in Domain:
+                patterns = self._semantic.retrieve_patterns(
+                    skill_name=skill_name,
+                    domain=domain,
+                    limit=20,
+                )
+                for pattern in patterns:
+                    if not pattern.expected_trajectory:
+                        pattern.expected_trajectory = trajectory
+                    else:
+                        for new_tp in trajectory:
+                            matched = False
+                            for existing_tp in pattern.expected_trajectory:
+                                if existing_tp.checkpoint_days == new_tp.checkpoint_days:
+                                    existing_tp.expected_ratio = (
+                                        0.8 * existing_tp.expected_ratio
+                                        + 0.2 * new_tp.expected_ratio
+                                    )
+                                    existing_tp.observation_count += new_tp.observation_count
+                                    existing_tp.confidence = min(
+                                        1.0, existing_tp.observation_count / 10
+                                    )
+                                    matched = True
+                                    break
+                            if not matched:
+                                pattern.expected_trajectory.append(new_tp)
+                        pattern.expected_trajectory.sort(key=lambda t: t.checkpoint_days)
+
+                    if hasattr(pattern, "expected_time_to_target_days"):
+                        if pattern.expected_trajectory:
+                            pattern.expected_time_to_target_days = float(
+                                pattern.expected_trajectory[-1].checkpoint_days
+                            )
+
+                    if hasattr(self._semantic, "_persist_pattern"):
+                        self._semantic._persist_pattern(pattern, tenant_id)
+
+        except Exception as e:
+            logger.debug(f"Failed to apply trajectory to patterns: {e}")
+
     def _get_all_tenants(self) -> List[str]:
         """
         Get all tenant IDs from Firebase.

@@ -79,13 +79,25 @@ class PendingOutcome:
     checkpoints: List[OutcomeCheckpoint] = field(default_factory=list)
     status: str = "pending"  # pending | checkpoint_24h | checkpoint_7d | closed | expired
 
-    projection_classification: Optional[str] = None  # under_projection | over_projection | accurate_projection
+    # Channel-driven checkpoint schedule (in days, e.g. [1, 7, 14, 30])
+    checkpoint_schedule: List[int] = field(default_factory=list)
+
+    projection_classification: Optional[str] = None
     composite_score: Optional[float] = None
 
     created_at: str = ""
     due_24h: str = ""
     due_7d: str = ""
     closed_at: Optional[str] = None
+
+    @staticmethod
+    def schedule_from_channel_config(channel_config: Any) -> List[int]:
+        """Derive checkpoint days from channel timing config."""
+        mw = getattr(channel_config, "measurement_window_hours", 24)
+        fm = getattr(channel_config, "full_measurement_days", 7)
+        window_days = max(1, int(mw / 24))
+        midpoint = (window_days + fm) // 2
+        return sorted(set([window_days, midpoint, fm]))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +115,7 @@ class PendingOutcome:
             "platform_config": self.platform_config,
             "checkpoints": [c.to_dict() for c in self.checkpoints],
             "status": self.status,
+            "checkpoint_schedule": self.checkpoint_schedule,
             "projection_classification": self.projection_classification,
             "composite_score": self.composite_score,
             "created_at": self.created_at,
@@ -132,6 +145,7 @@ class PendingOutcome:
             platform_config=d.get("platform_config", {}),
             checkpoints=checkpoints,
             status=d.get("status", "pending"),
+            checkpoint_schedule=d.get("checkpoint_schedule", []),
             projection_classification=d.get("projection_classification"),
             composite_score=d.get("composite_score"),
             created_at=d.get("created_at", ""),
@@ -201,6 +215,10 @@ class PendingOutcomeStore:
             if fm is not None:
                 window_7d = timedelta(days=fm)
 
+        checkpoint_schedule: List[int] = []
+        if channel_config is not None:
+            checkpoint_schedule = PendingOutcome.schedule_from_channel_config(channel_config)
+
         pending = PendingOutcome(
             prediction_id=prediction_id,
             tracking_id=tracking_id,
@@ -215,6 +233,7 @@ class PendingOutcomeStore:
             delivery_metadata=delivery_metadata,
             platform_config=platform_config or {},
             status="pending",
+            checkpoint_schedule=checkpoint_schedule,
             created_at=now.isoformat(),
             due_24h=(now + window_24h).isoformat(),
             due_7d=(now + window_7d).isoformat(),

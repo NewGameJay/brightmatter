@@ -9,7 +9,7 @@ when the environment has changed (drift), triggering relearning.
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING  # noqa: F401
 
 from ..types import Domain, Prediction, Outcome
 from ..memory.episodic import EpisodicMemoryStore
@@ -71,20 +71,23 @@ class Learner:
         prediction: Prediction,
         outcome: Outcome,
         learning_weight: float = 1.0,
+        checkpoint_day: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Main learning method. Updates patterns based on observed outcomes.
         
-        Calculates prediction error, updates all patterns that contributed
-        to the prediction, and checks for concept drift.
+        When ``checkpoint_day`` is provided and the matched pattern has an
+        ``expected_trajectory``, the error is computed against the trajectory
+        point for that checkpoint (not the final target). This prevents
+        incorrectly scoring a "spike then recover" strategy as a failure
+        at the spike checkpoint.
         
         Args:
             prediction: The prediction that was made
             outcome: The observed outcome
             learning_weight: Weight from ThreeGateScorer's learning_signal_quality.
-                Strategies with more open parameters produce stronger learning
-                signals (weight closer to 1.0). Fully locked strategies produce
-                weaker signals (weight closer to 0.0).
+            checkpoint_day: Which checkpoint day this observation corresponds to
+                (e.g. 7, 14, 30). When set, trajectory-aware scoring is used.
             
         Returns:
             Dict with:
@@ -92,12 +95,14 @@ class Learner:
             - drift_detected: bool - whether drift was detected
             - drift_skill: Optional[str] - skill name if drift detected
             - learning_weight: float - weight applied to this update
+            - trajectory_scored: bool - whether trajectory scoring was used
         """
         result = {
             "patterns_updated": 0,
             "drift_detected": False,
             "drift_skill": None,
             "learning_weight": learning_weight,
+            "trajectory_scored": False,
         }
 
         # Clamp learning_weight to [0.05, 1.0] to avoid zero-updates
@@ -126,7 +131,39 @@ class Learner:
         success = outcome.goal_completed
         
         # Step 3: Update each pattern used in the prediction
+        # When checkpoint_day is set and the pattern has a trajectory,
+        # score against the trajectory point instead of the final target.
         for pattern_id in prediction.patterns_used:
+            trajectory_used = False
+            if checkpoint_day and hasattr(self._semantic, 'get_pattern'):
+                try:
+                    pattern = self._semantic.get_pattern(pattern_id, prediction.domain)
+                    if pattern and pattern.expected_trajectory:
+                        tp = min(
+                            pattern.expected_trajectory,
+                            key=lambda t: abs(t.checkpoint_days - checkpoint_day),
+                        )
+                        trajectory_expected = tp.expected_ratio
+                        trajectory_error = observed_ratio - trajectory_expected
+
+                        # Update only this trajectory point with EMA
+                        tp.expected_ratio = (
+                            0.9 * tp.expected_ratio + 0.1 * observed_ratio
+                        )
+                        tp.observation_count += 1
+                        tp.confidence = min(1.0, tp.observation_count / 10)
+
+                        # Use trajectory-adjusted observed_ratio for pattern update
+                        weighted_observed_ratio = (
+                            trajectory_expected
+                            + (observed_ratio - trajectory_expected) * learning_weight
+                        )
+                        error = trajectory_error
+                        trajectory_used = True
+                        result["trajectory_scored"] = True
+                except Exception as e:
+                    logger.debug(f"Trajectory scoring failed for {pattern_id}: {e}")
+
             self._semantic.update_from_outcome(
                 pattern_id=pattern_id,
                 domain=prediction.domain,
