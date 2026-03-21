@@ -31,8 +31,8 @@ class Guidance:
     """
     Output from the predictor providing parameter guidance for skill execution.
     
-    Contains recommended parameters, confidence levels, and metadata about
-    whether this is an exploration or exploitation decision.
+    Contains recommended parameters, confidence levels, prediction data,
+    and metadata about whether this is an exploration or exploitation decision.
     """
     parameters: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.5
@@ -42,6 +42,11 @@ class Guidance:
     patterns_used: List[str] = field(default_factory=list)
     procedural_applied: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    predicted_outcome: Optional[float] = None
+    predicted_baseline: Optional[float] = None
+    pattern_expected_value: Optional[float] = None
+    context_matched: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -53,6 +58,10 @@ class Guidance:
             "patterns_used": self.patterns_used,
             "procedural_applied": self.procedural_applied,
             "created_at": self.created_at,
+            "predicted_outcome": self.predicted_outcome,
+            "predicted_baseline": self.predicted_baseline,
+            "pattern_expected_value": self.pattern_expected_value,
+            "context_matched": self.context_matched,
         }
     
     @classmethod
@@ -67,6 +76,10 @@ class Guidance:
             patterns_used=data.get("patterns_used", []),
             procedural_applied=data.get("procedural_applied", []),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            predicted_outcome=data.get("predicted_outcome"),
+            predicted_baseline=data.get("predicted_baseline"),
+            pattern_expected_value=data.get("pattern_expected_value"),
+            context_matched=data.get("context_matched", {}),
         )
 
 
@@ -407,9 +420,31 @@ class Predictor:
         # Clamp confidence to [0, 1]
         combined_confidence = max(0.0, min(1.0, combined_confidence))
         
+        # Step 6: Compute predicted outcome from pattern expected_value × client baseline
+        pattern_expected_value = best_pattern.expected_value
+        phase0 = context.get("_phase0_computed_metrics", {})
+
+        client_baseline = (
+            phase0.get("churn_rate")
+            or phase0.get("current_cpa")
+            or phase0.get("current_roas")
+            or context.get("baseline_metric")
+        )
+
+        predicted_outcome = None
+        predicted_baseline = None
+        if client_baseline is not None and isinstance(client_baseline, (int, float)):
+            predicted_outcome = pattern_expected_value * float(client_baseline)
+            predicted_baseline = float(client_baseline)
+
+        context_matched = {
+            k: v for k, v in context.items() if k in best_pattern.condition
+        }
+
         logger.debug(
             f"Exploiting pattern {best_pattern.pattern_id} "
-            f"with confidence {combined_confidence:.2f}"
+            f"with confidence {combined_confidence:.2f}, "
+            f"predicted_outcome={predicted_outcome}"
         )
         
         return Guidance(
@@ -420,6 +455,10 @@ class Predictor:
             exploration_reason="",
             patterns_used=patterns_used,
             procedural_applied=procedural_applied,
+            predicted_outcome=predicted_outcome,
+            predicted_baseline=predicted_baseline,
+            pattern_expected_value=pattern_expected_value,
+            context_matched=context_matched,
         )
     
     def _phase0_parameter_adjustments(

@@ -235,9 +235,18 @@ async def get_guidance(
         domain=d,
     )
 
+    guidance_dict = guidance.to_dict() if hasattr(guidance, "to_dict") else {}
+
     return {
         "skill_name": skill_name,
-        "guidance": guidance.to_dict() if hasattr(guidance, "to_dict") else str(guidance),
+        "guidance": guidance_dict,
+        "prediction": {
+            "predicted_outcome": guidance_dict.get("predicted_outcome"),
+            "predicted_baseline": guidance_dict.get("predicted_baseline"),
+            "pattern_expected_value": guidance_dict.get("pattern_expected_value"),
+            "confidence": guidance_dict.get("confidence", 0.5),
+            "is_exploration": guidance_dict.get("is_exploration", True),
+        },
     }
 
 
