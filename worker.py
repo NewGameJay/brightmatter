@@ -30,19 +30,6 @@ load_dotenv()
 logger = logging.getLogger("brightmatter.worker")
 
 
-def _get_supabase():
-    """Lazy-load Supabase client."""
-    try:
-        from supabase import create_client
-    except ImportError:
-        raise ImportError("supabase package required: pip install supabase")
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""))
-    if not url or not key:
-        raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
-    return create_client(url, key)
-
-
 class BrightMatterWorker:
     """Pulls events from Supabase, processes through learning pipeline, updates guidance."""
 
@@ -57,7 +44,8 @@ class BrightMatterWorker:
     @property
     def supabase(self):
         if self._supabase is None:
-            self._supabase = _get_supabase()
+            from lib.supabase_client import get_supabase
+            self._supabase = get_supabase()
         return self._supabase
 
     def run_cycle(self) -> Dict[str, Any]:
