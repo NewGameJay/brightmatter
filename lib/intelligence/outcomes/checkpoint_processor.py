@@ -63,6 +63,15 @@ class CheckpointProcessor:
                         pending, metrics["primary_signal"]
                     )
 
+                    # Tag external context (seasonality, anomalies, etc.)
+                    external_tags = self._tag_external_context(
+                        pending, metrics
+                    )
+                    if external_tags:
+                        metrics["_external_context"] = external_tags
+                        if external_tags.get("anomaly_flag"):
+                            metrics["_anomaly_discount"] = 0.3
+
                     self._bridge.close_deferred_outcome(
                         prediction_id=pending.prediction_id,
                         client_id=pending.client_id,
@@ -213,6 +222,75 @@ class CheckpointProcessor:
         elif ratio > 1.2:
             return "over_projection"
         return "accurate_projection"
+
+    def _tag_external_context(
+        self,
+        pending: PendingOutcome,
+        metrics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Check for external events and tag the episode.
+
+        Tags include seasonality, day-of-week context, and anomaly flags
+        from MH-OS (when available). Episodes tagged with anomaly_flag
+        get a reduced learning weight so external noise doesn't corrupt
+        pattern confidence.
+        """
+        from datetime import datetime as dt
+
+        tags: Dict[str, Any] = {}
+
+        try:
+            created = dt.fromisoformat(
+                pending.created_at.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            return tags
+
+        month = created.month
+        if month in [11, 12]:
+            tags["seasonality"] = "holiday_q4"
+        elif month in [1, 2]:
+            tags["seasonality"] = "post_holiday_q1"
+        elif month in [6, 7, 8]:
+            tags["seasonality"] = "summer"
+
+        dow = created.weekday()
+        if dow >= 5:
+            tags["day_context"] = "weekend"
+
+        # MH-OS anomaly check (Supabase query when available)
+        try:
+            anomalies = self._check_mh_os_anomalies(
+                client_id=pending.client_id,
+                start_date=pending.created_at,
+                end_date=metrics.get("measured_at", pending.created_at),
+            )
+            if anomalies:
+                tags["external_anomalies"] = anomalies
+                tags["anomaly_flag"] = True
+        except Exception:
+            pass
+
+        if metrics.get("platform_status") == "degraded":
+            tags["platform_issue"] = True
+            tags["anomaly_flag"] = True
+
+        return tags
+
+    def _check_mh_os_anomalies(
+        self,
+        client_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Query Supabase for MH-OS signals that overlap this measurement window.
+
+        Stub — implement when Supabase shared DB is available.
+        """
+        # Query: SELECT * FROM signals
+        #        WHERE date BETWEEN start AND end
+        #        AND severity IN ('warning', 'critical')
+        return None
 
     def _query_mh1hq(self, delivery: Dict[str, Any]) -> Optional[Dict]:
         """Query MH1HQ for execution results via MCP."""

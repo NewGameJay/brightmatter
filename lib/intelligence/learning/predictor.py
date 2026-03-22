@@ -187,7 +187,10 @@ class Predictor:
         if should_explore or not patterns:
             guidance = self._explore(skill_name, domain, context, procedural, reason)
         else:
-            guidance = self._exploit(patterns, procedural, context)
+            guidance = self._exploit(
+                patterns, procedural, context,
+                skill_name=skill_name, tenant_id=tenant_id, domain=domain,
+            )
         
         # Step 5: Apply Phase 0 adjustments on top of guidance
         if phase0_adjustments:
@@ -349,79 +352,165 @@ class Predictor:
             procedural_applied=procedural_applied,
         )
     
+    def _get_blended_guidance(
+        self,
+        skill_name: str,
+        tenant_id: str,
+        domain: "Domain",
+        patterns: List[SemanticPattern],
+        context: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], float, float, List[str]]:
+        """Retrieve and blend patterns across three specificity levels.
+
+        Level 3 (Client): client_id=tenant_id, any conditions
+        Level 2 (Segment): client_id=None (cross-client), tight context match
+        Level 1 (Universal): client_id=None, broad/empty conditions
+
+        Returns (blended_parameters, blended_expected_value, blended_confidence, pattern_ids)
+        """
+        # Level 3: client-specific (already retrieved for this tenant)
+        client_matches = [
+            p for p in patterns if self._context_matches(p.condition, context)
+        ]
+
+        # Level 2 + 1: cross-client patterns (tenant_id="*")
+        segment_patterns: List[SemanticPattern] = []
+        try:
+            segment_patterns = self._retrieve_patterns(skill_name, "*", domain)
+        except Exception:
+            pass
+
+        segment_matches = [
+            p for p in segment_patterns
+            if p.condition and not p.condition.get("_universal")
+            and self._context_matches(p.condition, context)
+        ]
+        universal_matches = [
+            p for p in segment_patterns
+            if not p.condition or p.condition.get("_universal")
+        ]
+
+        def _level_weight(pats: List[SemanticPattern]) -> float:
+            return sum(p.evidence_count * p.confidence for p in pats)
+
+        cw = _level_weight(client_matches)
+        sw = _level_weight(segment_matches)
+        uw = _level_weight(universal_matches)
+        total = cw + sw + uw
+
+        if total == 0:
+            return {}, 1.0, 0.5, []
+
+        cw_n, sw_n, uw_n = cw / total, sw / total, uw / total
+
+        def _weighted_ev(pats: List[SemanticPattern]) -> Optional[float]:
+            if not pats:
+                return None
+            weights = [p.evidence_count * p.confidence for p in pats]
+            tw = sum(weights)
+            if tw == 0:
+                return None
+            return sum(p.expected_value * w for p, w in zip(pats, weights)) / tw
+
+        c_ev = _weighted_ev(client_matches)
+        s_ev = _weighted_ev(segment_matches)
+        u_ev = _weighted_ev(universal_matches)
+
+        blended_ev = 0.0
+        if c_ev is not None:
+            blended_ev += cw_n * c_ev
+        if s_ev is not None:
+            blended_ev += sw_n * s_ev
+        if u_ev is not None:
+            blended_ev += uw_n * u_ev
+
+        blended_conf = (
+            cw_n * max((p.confidence for p in client_matches), default=0.5)
+            + sw_n * max((p.confidence for p in segment_matches), default=0.5)
+            + uw_n * max((p.confidence for p in universal_matches), default=0.5)
+        )
+
+        # Parameters: prefer client > segment > universal
+        blended_params: Dict[str, Any] = {}
+        for p in universal_matches:
+            blended_params.update(p.recommendation)
+        for p in segment_matches:
+            blended_params.update(p.recommendation)
+        for p in client_matches:
+            blended_params.update(p.recommendation)
+
+        all_ids = (
+            [p.pattern_id for p in client_matches]
+            + [p.pattern_id for p in segment_matches]
+            + [p.pattern_id for p in universal_matches]
+        )
+
+        logger.debug(
+            f"Blended guidance: client={cw_n:.0%}({len(client_matches)}p) "
+            f"segment={sw_n:.0%}({len(segment_matches)}p) "
+            f"universal={uw_n:.0%}({len(universal_matches)}p) "
+            f"ev={blended_ev:.3f} conf={blended_conf:.3f}"
+        )
+
+        return blended_params, blended_ev, blended_conf, all_ids
+
     def _exploit(
         self,
         patterns: List[SemanticPattern],
         procedural: List[ProceduralKnowledge],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
+        skill_name: str = "",
+        tenant_id: str = "",
+        domain: Optional["Domain"] = None,
     ) -> Guidance:
         """
         Generate guidance by exploiting learned patterns.
-        
-        When exploiting, we:
-        1. Filter patterns to those matching current context
-        2. Select the best pattern by confidence × recent_accuracy
-        3. Build parameters from the pattern's recommendation
-        4. Apply procedural knowledge for cross-skill insights
-        5. Calculate combined confidence
-        
-        Args:
-            patterns: Available semantic patterns
-            procedural: Applicable procedural knowledge
-            context: Current execution context
-            
-        Returns:
-            Guidance with exploitation parameters
+
+        Uses three-level hierarchical blending (client → segment → universal)
+        to produce predictions that smoothly transition from generic to
+        client-specific as evidence accumulates.
         """
-        # Step 1: Filter patterns matching context
-        matching_patterns = [
-            p for p in patterns
-            if self._context_matches(p.condition, context)
-        ]
-        
-        # Fall back to all patterns if none match exactly
-        if not matching_patterns:
-            matching_patterns = patterns
-        
-        # Step 2: Select best pattern by confidence × recent_accuracy
-        best_pattern = max(
-            matching_patterns,
-            key=lambda p: p.confidence * p.recent_accuracy
+        # Hierarchical blending across three levels
+        blended_params, blended_ev, blended_conf, all_pattern_ids = (
+            self._get_blended_guidance(
+                skill_name, tenant_id, domain, patterns, context,
+            )
         )
-        
-        # Step 3: Build parameters from recommendation
-        parameters = dict(best_pattern.recommendation)
-        patterns_used = [best_pattern.pattern_id]
-        
-        # Step 4: Apply procedural knowledge
+
+        # If blending returned nothing, fall back to single best pattern
+        if not blended_params and not all_pattern_ids:
+            matching_patterns = [
+                p for p in patterns if self._context_matches(p.condition, context)
+            ]
+            if not matching_patterns:
+                matching_patterns = patterns
+            best = max(matching_patterns, key=lambda p: p.confidence * p.recent_accuracy)
+            blended_params = dict(best.recommendation)
+            blended_ev = best.expected_value
+            blended_conf = best.confidence * best.recent_accuracy
+            all_pattern_ids = [best.pattern_id]
+
+        parameters = dict(blended_params)
+
+        # Apply procedural knowledge
         procedural_applied = []
         for knowledge in procedural:
             parameters = self._apply_procedural(parameters, knowledge)
             procedural_applied.append(knowledge.knowledge_id)
-        
-        # Step 5: Calculate combined confidence
-        pattern_confidence = best_pattern.confidence * best_pattern.recent_accuracy
-        
+
+        # Blend procedural confidence
         if procedural and procedural_applied:
-            # Average pattern confidence with procedural confidence
-            procedural_confidences = [
-                k.cross_skill_confidence
-                for k in procedural
+            proc_confs = [
+                k.cross_skill_confidence for k in procedural
                 if k.knowledge_id in procedural_applied
             ]
-            if procedural_confidences:
-                avg_procedural = sum(procedural_confidences) / len(procedural_confidences)
-                combined_confidence = (pattern_confidence + avg_procedural) / 2
-            else:
-                combined_confidence = pattern_confidence
-        else:
-            combined_confidence = pattern_confidence
-        
-        # Clamp confidence to [0, 1]
-        combined_confidence = max(0.0, min(1.0, combined_confidence))
-        
-        # Step 6: Compute predicted outcome from pattern expected_value × client baseline
-        pattern_expected_value = best_pattern.expected_value
+            if proc_confs:
+                blended_conf = (blended_conf + sum(proc_confs) / len(proc_confs)) / 2
+
+        combined_confidence = max(0.0, min(1.0, blended_conf))
+
+        # Compute predicted outcome from blended expected_value × client baseline
+        pattern_expected_value = blended_ev
         phase0 = context.get("_phase0_computed_metrics", {})
 
         client_baseline = (
@@ -437,23 +526,28 @@ class Predictor:
             predicted_outcome = pattern_expected_value * float(client_baseline)
             predicted_baseline = float(client_baseline)
 
-        context_matched = {
-            k: v for k, v in context.items() if k in best_pattern.condition
-        }
+        context_matched = {}
+        for pid in all_pattern_ids[:1]:
+            for p in patterns:
+                if p.pattern_id == pid:
+                    context_matched = {
+                        k: v for k, v in context.items() if k in p.condition
+                    }
+                    break
 
         logger.debug(
-            f"Exploiting pattern {best_pattern.pattern_id} "
+            f"Exploiting {len(all_pattern_ids)} patterns (blended) "
             f"with confidence {combined_confidence:.2f}, "
             f"predicted_outcome={predicted_outcome}"
         )
-        
+
         return Guidance(
             parameters=parameters,
             confidence=combined_confidence,
             uncertainty=1.0 - combined_confidence,
             is_exploration=False,
             exploration_reason="",
-            patterns_used=patterns_used,
+            patterns_used=all_pattern_ids,
             procedural_applied=procedural_applied,
             predicted_outcome=predicted_outcome,
             predicted_baseline=predicted_baseline,
