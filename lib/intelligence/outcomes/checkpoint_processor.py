@@ -31,10 +31,21 @@ class CheckpointProcessor:
     loop by calling bridge.close_deferred_outcome().
     """
 
-    def __init__(self, firebase_client: Any, bridge: Any):
+    def __init__(self, firebase_client: Any, bridge: Any, supabase_client: Any = None):
         self._store = PendingOutcomeStore(firebase_client)
         self._bridge = bridge
         self._firebase = firebase_client
+        self._supabase = supabase_client
+
+    @property
+    def supabase(self):
+        if self._supabase is None:
+            try:
+                from lib.supabase_client import get_supabase_or_none
+                self._supabase = get_supabase_or_none()
+            except Exception:
+                pass
+        return self._supabase
 
     def process_all_due(self) -> Dict[str, Any]:
         """Process all due checkpoints. Called by cron."""
@@ -283,29 +294,169 @@ class CheckpointProcessor:
         start_date: str,
         end_date: str,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Query Supabase for MH-OS signals that overlap this measurement window.
-
-        Stub — implement when Supabase shared DB is available.
-        """
-        # Query: SELECT * FROM signals
-        #        WHERE date BETWEEN start AND end
-        #        AND severity IN ('warning', 'critical')
-        return None
+        """Query Supabase for MH-OS severity signals that overlap this window."""
+        if not self.supabase:
+            return None
+        try:
+            result = (
+                self.supabase.table("events")
+                .select("result, metrics, context, created_at")
+                .eq("source", "mh-os")
+                .eq("event_type", "signal")
+                .eq("client_id", client_id)
+                .gte("created_at", start_date)
+                .lte("created_at", end_date)
+                .execute()
+            )
+            anomalies = []
+            for row in (result.data or []):
+                severity = (
+                    (row.get("result") or {}).get("severity")
+                    or (row.get("metrics") or {}).get("deviation_severity")
+                )
+                if severity in ("warning", "critical"):
+                    anomalies.append({
+                        "severity": severity,
+                        "metrics": row.get("metrics", {}),
+                        "created_at": row.get("created_at", ""),
+                    })
+            return anomalies if anomalies else None
+        except Exception as e:
+            logger.debug(f"MH-OS anomaly query failed: {e}")
+            return None
 
     def _query_mh1hq(self, delivery: Dict[str, Any]) -> Optional[Dict]:
-        """Query MH1HQ for execution results via MCP."""
-        # Stub — implement when MCP client is available in BrightMatter
-        return None
+        """Query Supabase events table for MH1HQ skill execution results."""
+        if not self.supabase:
+            return None
+        try:
+            skill_run_id = delivery.get("skill_run_id", "")
+            module_id = delivery.get("module_id", "")
+            client_id = delivery.get("client_id", "")
+
+            query = (
+                self.supabase.table("events")
+                .select("result, metrics, context")
+                .eq("source", "mh1-hq")
+                .eq("event_type", "skill_completed")
+            )
+            if client_id:
+                query = query.eq("client_id", client_id)
+
+            result = query.order("created_at", desc=True).limit(5).execute()
+
+            for row in (result.data or []):
+                ctx = row.get("context") or {}
+                if skill_run_id and ctx.get("skill_run_id") == skill_run_id:
+                    return {**(row.get("metrics") or {}), **(row.get("result") or {})}
+                if module_id and ctx.get("module_id") == module_id:
+                    return {**(row.get("metrics") or {}), **(row.get("result") or {})}
+
+            # If no exact match, return most recent result for this client
+            if result.data:
+                row = result.data[0]
+                return {**(row.get("metrics") or {}), **(row.get("result") or {})}
+
+            return None
+        except Exception as e:
+            logger.debug(f"MH1HQ query failed: {e}")
+            return None
 
     def _query_platform(self, delivery: Dict[str, Any]) -> Optional[Dict]:
-        """Query platform APIs for campaign performance."""
-        # Stub — implement per platform (Meta, Google, etc.)
-        return None
+        """Query Supabase for platform metrics by campaign/ad set ID."""
+        if not self.supabase:
+            return None
+        try:
+            campaign_id = delivery.get("campaign_id", "")
+            ad_set_id = delivery.get("ad_set_id", "")
+
+            result = (
+                self.supabase.table("events")
+                .select("result, metrics")
+                .eq("event_type", "platform_metrics")
+                .order("created_at", desc=True)
+                .limit(10)
+                .execute()
+            )
+
+            for row in (result.data or []):
+                ctx = row.get("context") or row.get("result") or {}
+                if campaign_id and ctx.get("campaign_id") == campaign_id:
+                    return row.get("metrics") or row.get("result")
+                if ad_set_id and ctx.get("ad_set_id") == ad_set_id:
+                    return row.get("metrics") or row.get("result")
+
+            return None
+        except Exception as e:
+            logger.debug(f"Platform query failed: {e}")
+            return None
 
     def _check_report(self, delivery: Dict[str, Any]) -> Optional[Dict]:
-        """Check if a delivered report was viewed/actioned."""
-        # Stub — check Firebase user_activity or PostHog
-        return None
+        """Query Supabase for report engagement events."""
+        if not self.supabase:
+            return None
+        try:
+            report_url = delivery.get("report_url", "")
+            if not report_url:
+                return None
+
+            result = (
+                self.supabase.table("events")
+                .select("event_type, result, metrics, created_at")
+                .in_("event_type", ["report_viewed", "report_shared", "report_feedback"])
+                .order("created_at", desc=True)
+                .execute()
+            )
+
+            views = 0
+            shared = False
+            scroll_depth = 0.0
+            first_view_at = None
+
+            for row in (result.data or []):
+                ctx = row.get("context") or row.get("result") or {}
+                if ctx.get("report_url") != report_url:
+                    continue
+
+                if row.get("event_type") == "report_viewed":
+                    views += 1
+                    if first_view_at is None:
+                        first_view_at = row.get("created_at", "")
+                    metrics = row.get("metrics") or {}
+                    sd = metrics.get("scroll_depth_pct", 0)
+                    if isinstance(sd, (int, float)) and sd > scroll_depth:
+                        scroll_depth = float(sd)
+
+                elif row.get("event_type") == "report_shared":
+                    shared = True
+
+            if views == 0:
+                return None
+
+            report_metrics: Dict[str, Any] = {
+                "report_views": views,
+                "shared": shared,
+                "scroll_depth_pct": scroll_depth,
+            }
+
+            if first_view_at and delivery.get("delivered_at"):
+                try:
+                    from datetime import datetime
+                    delivered = datetime.fromisoformat(
+                        delivery["delivered_at"].replace("Z", "+00:00")
+                    )
+                    viewed = datetime.fromisoformat(
+                        first_view_at.replace("Z", "+00:00")
+                    )
+                    hours = (viewed - delivered).total_seconds() / 3600
+                    report_metrics["time_to_first_view_hours"] = round(hours, 1)
+                except Exception:
+                    pass
+
+            return report_metrics
+        except Exception as e:
+            logger.debug(f"Report check failed: {e}")
+            return None
 
 
 __all__ = ["CheckpointProcessor"]
