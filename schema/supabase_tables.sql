@@ -116,3 +116,20 @@ CREATE INDEX IF NOT EXISTS idx_patterns_skill_client
 
 CREATE INDEX IF NOT EXISTS idx_outcomes_tracking
   ON outcomes(tracking_id);
+
+CREATE INDEX IF NOT EXISTS idx_events_source_skill
+  ON events(source, event_type, client_id);
+
+CREATE INDEX IF NOT EXISTS idx_events_report
+  ON events(event_type, created_at)
+  WHERE event_type IN ('report_viewed', 'report_shared', 'report_feedback');
+
+-- ── RPC Functions ──────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION get_active_pairs(lookback_days INT DEFAULT 30)
+RETURNS TABLE(skill_name TEXT, client_id TEXT) AS $$
+  SELECT DISTINCT e.skill_name, e.client_id
+  FROM events e
+  WHERE e.skill_name IS NOT NULL
+    AND e.created_at > NOW() - (lookback_days || ' days')::INTERVAL
+$$ LANGUAGE sql STABLE;
