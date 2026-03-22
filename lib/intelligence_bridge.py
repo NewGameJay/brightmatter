@@ -1600,18 +1600,36 @@ class IntelligenceBridge:
 _default_bridge: Optional[IntelligenceBridge] = None
 
 
+def get_intelligence_bridge(**kwargs):
+    """Factory function that returns the appropriate bridge implementation.
+
+    When ``BRIGHTMATTER_URL`` is set, returns a ``RemoteIntelligenceBridge``
+    that routes all calls through the BrightMatter HTTP API. Otherwise
+    returns a local ``IntelligenceBridge`` with an embedded engine.
+
+    This lets mh1-hq gradually migrate: set the env var to switch to
+    remote BrightMatter, remove it to fall back to local.
+    """
+    import os
+    if os.getenv("BRIGHTMATTER_URL"):
+        from lib.remote_bridge import RemoteIntelligenceBridge
+        return RemoteIntelligenceBridge()
+    return IntelligenceBridge(**kwargs)
+
+
 def get_bridge() -> IntelligenceBridge:
     """
     Get the default IntelligenceBridge instance.
 
-    Creates a singleton instance on first call.
+    Creates a singleton instance on first call. Respects BRIGHTMATTER_URL
+    for remote bridge routing.
 
     Returns:
-        IntelligenceBridge instance
+        IntelligenceBridge or RemoteIntelligenceBridge instance
     """
     global _default_bridge
     if _default_bridge is None:
-        _default_bridge = IntelligenceBridge()
+        _default_bridge = get_intelligence_bridge()
     return _default_bridge
 
 
