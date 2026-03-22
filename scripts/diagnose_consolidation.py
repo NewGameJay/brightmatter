@@ -37,6 +37,43 @@ def check_firebase():
     print("\n" + "=" * 60)
     print("1. FIREBASE CONNECTIVITY")
     print("=" * 60)
+
+    # Pre-check: verify credential sources exist
+    cred_json = (
+        os.environ.get("SA_JSON", "")
+        or os.environ.get("SA_JSON_KEY", "")
+        or os.environ.get("FIREBASE_CREDENTIALS_JSON", "")
+        or os.environ.get("SERVICE_ACCOUNT_KEY", "")
+    )
+    cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    sa_key_path = os.environ.get("SERVICE_ACCOUNT_KEY_PATH", "")
+    project_id = os.environ.get("FIREBASE_PROJECT_ID", "") or os.environ.get("GCP_PROJECT_ID", "")
+
+    has_json = cred_json and cred_json.strip().startswith("{")
+    has_file = (
+        (cred_json and os.path.isfile(cred_json))
+        or (sa_key_path and os.path.isfile(sa_key_path))
+        or (cred_path and os.path.isfile(cred_path))
+    )
+
+    print(f"  Project ID: {'SET' if project_id else 'MISSING'} ({project_id})")
+    print(f"  Inline JSON credential: {'YES' if has_json else 'NO'}")
+    print(f"  File-based credential: {'YES' if has_file else 'NO'}")
+
+    if not has_json and not has_file:
+        print()
+        print("  [FAIL] No valid Firebase credentials found in this environment.")
+        print()
+        print("  To fix, add the service account JSON as a Cursor Cloud Agent secret:")
+        print("    1. Go to cursor.com → Dashboard → Cloud Agents → Secrets")
+        print("    2. Add a secret named FIREBASE_CREDENTIALS_JSON")
+        print("    3. Paste the full JSON content of your Firebase service account key")
+        print("    4. Re-run this script")
+        print()
+        print("  The service account JSON should start with {\"type\": \"service_account\", ...}")
+        print(f"  Target project: {project_id or '(set FIREBASE_PROJECT_ID)'}")
+        return None
+
     try:
         from lib.firebase_client import get_firebase_client
         fb = get_firebase_client()

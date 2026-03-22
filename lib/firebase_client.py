@@ -216,13 +216,24 @@ class ConnectionPool:
                     or os.environ.get("SERVICE_ACCOUNT_KEY")
                 )
                 cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-                if sa_json:
-                    cred = firebase_admin.credentials.Certificate(
-                        json.loads(sa_json) if isinstance(sa_json, str) else sa_json
-                    )
+                sa_key_path = os.environ.get("SERVICE_ACCOUNT_KEY_PATH", "")
+                if sa_json and isinstance(sa_json, str) and sa_json.strip().startswith("{"):
+                    cred = firebase_admin.credentials.Certificate(json.loads(sa_json))
+                elif sa_json and isinstance(sa_json, str) and os.path.isfile(sa_json):
+                    cred = firebase_admin.credentials.Certificate(sa_json)
+                elif sa_key_path and os.path.isfile(sa_key_path):
+                    cred = firebase_admin.credentials.Certificate(sa_key_path)
                 elif cred_path and os.path.isfile(cred_path):
                     cred = firebase_admin.credentials.Certificate(cred_path)
                 else:
+                    # Clear GOOGLE_APPLICATION_CREDENTIALS if it points to a nonexistent file
+                    # to prevent google.auth.default() from failing on stale paths
+                    if cred_path and not os.path.isfile(cred_path):
+                        logger.warning(
+                            f"GOOGLE_APPLICATION_CREDENTIALS points to nonexistent file: {cred_path}. "
+                            f"Clearing for ADC fallback."
+                        )
+                        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
                     cred = firebase_admin.credentials.ApplicationDefault()
             
             options = {"projectId": project_id}
