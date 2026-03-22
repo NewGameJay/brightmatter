@@ -655,17 +655,27 @@ class SemanticMemoryStore:
                 continue
 
             if all(isinstance(v, (int, float)) for v in values):
-                min_val = min(values)
-                max_val = max(values)
-                mean_val = sum(values) / len(values)
+                sorted_vals = sorted(values)
+                n = len(sorted_vals)
+                mean_val = sum(values) / n
 
-                if max_val - min_val <= (0.2 * abs(mean_val) if mean_val != 0 else 0.2):
+                if n < 3 or (sorted_vals[-1] - sorted_vals[0]) <= (0.2 * abs(mean_val) if mean_val != 0 else 0.2):
                     common_context[key] = mean_val
                 else:
-                    common_context[key] = {"min": min_val, "max": max_val}
+                    # 10th-90th percentile range instead of raw min/max
+                    p10_idx = max(0, int(n * 0.10))
+                    p90_idx = min(n - 1, int(n * 0.90))
+                    p10 = sorted_vals[p10_idx]
+                    p90 = sorted_vals[p90_idx]
+                    range_width = p90 - p10
+                    padding = range_width * 0.10
+                    common_context[key] = {"min": p10 - padding, "max": p90 + padding}
             else:
-                if len(set(str(v) for v in values)) == 1:
+                unique_vals = list(set(str(v) for v in values))
+                if len(unique_vals) == 1:
                     common_context[key] = values[0]
+                elif len(unique_vals) <= 10:
+                    common_context[key] = unique_vals
 
         # Guarantee non-empty so _find_similar_pattern has something to match on
         if not common_context:
@@ -840,6 +850,11 @@ class SemanticMemoryStore:
                 if abs(pattern_val - episode_val) > tolerance:
                     return False
             
+            # Handle set match for categorical values (list of allowed values)
+            elif isinstance(pattern_val, list):
+                if str(episode_val) not in [str(v) for v in pattern_val]:
+                    return False
+
             # Handle exact match for non-numeric
             else:
                 if str(pattern_val) != str(episode_val):
