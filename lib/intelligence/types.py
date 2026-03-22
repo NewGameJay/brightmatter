@@ -407,13 +407,92 @@ class ProceduralKnowledge:
         )
 
 
+@dataclass
+class ChannelContext:
+    """Required context for any execution episode.
+
+    Platforms (MH1HQ, MH-OS, mh1-skills) should populate this when
+    writing events to the shared store. BrightMatter uses it for
+    context matching, range computation, and pattern splitting.
+    """
+    client_id: str = ""
+    industry: str = ""
+    region: str = ""
+
+    channel_id: str = ""
+    account_age_days: Optional[int] = None
+    active_days_last_90: Optional[int] = None
+    dormancy_days: Optional[int] = None
+
+    historical_primary_metric: Optional[float] = None
+    monthly_spend: Optional[float] = None
+    list_size: Optional[int] = None
+
+    month: Optional[int] = None
+    quarter: Optional[int] = None
+    day_of_week: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in {
+            "client_id": self.client_id,
+            "industry": self.industry,
+            "region": self.region,
+            "channel_id": self.channel_id,
+            "account_age_days": self.account_age_days,
+            "active_days_last_90": self.active_days_last_90,
+            "dormancy_days": self.dormancy_days,
+            "historical_primary_metric": self.historical_primary_metric,
+            "monthly_spend": self.monthly_spend,
+            "list_size": self.list_size,
+            "month": self.month,
+            "quarter": self.quarter,
+            "day_of_week": self.day_of_week,
+        }.items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChannelContext":
+        fields = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in data.items() if k in fields})
+
+
+_CHANNEL_CONTEXT_REQUIRED = ["client_id", "channel_id"]
+_CHANNEL_CONTEXT_RECOMMENDED = ["industry", "account_age_days", "dormancy_days"]
+
+
+def validate_channel_context(
+    context: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """Validate that channel context has required fields.
+
+    Returns (is_valid, message). Missing recommended fields produce
+    a warning message but still return is_valid=True.
+    """
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    cc = context.get("channel_context", {})
+    missing_req = [k for k in _CHANNEL_CONTEXT_REQUIRED if not cc.get(k)]
+    missing_rec = [k for k in _CHANNEL_CONTEXT_RECOMMENDED if not cc.get(k)]
+
+    if missing_req:
+        return False, f"Missing required channel context: {missing_req}"
+    if missing_rec:
+        _logger.warning(
+            f"Missing recommended channel context (lower pattern quality): {missing_rec}"
+        )
+    return True, ""
+
+
 __all__ = [
     "MemoryLayer",
     "Domain",
+    "EpisodeSource",
     "Prediction",
     "Outcome",
     "EpisodicMemory",
     "TrajectoryPoint",
     "SemanticPattern",
     "ProceduralKnowledge",
+    "ChannelContext",
+    "validate_channel_context",
 ]

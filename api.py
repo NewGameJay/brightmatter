@@ -187,7 +187,11 @@ async def health():
 async def write_episode(req: WriteEpisodeRequest):
     """Write a skill execution episode directly into the intelligence system."""
     engine = _get_engine()
-    from lib.intelligence.types import Domain
+    from lib.intelligence.types import Domain, validate_channel_context
+
+    is_valid, msg = validate_channel_context(req.context)
+    if not is_valid:
+        logger.warning(f"Episode missing channel context: {msg}")
 
     try:
         domain = Domain(req.domain)
