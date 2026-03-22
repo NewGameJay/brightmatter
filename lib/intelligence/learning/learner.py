@@ -105,6 +105,11 @@ class Learner:
             "trajectory_scored": False,
         }
 
+        # Apply anomaly discount from external context tagging
+        anomaly_discount = (outcome.metadata or {}).get("_anomaly_discount")
+        if anomaly_discount is not None and isinstance(anomaly_discount, (int, float)):
+            learning_weight *= float(anomaly_discount)
+
         # Clamp learning_weight to [0.05, 1.0] to avoid zero-updates
         learning_weight = max(0.05, min(1.0, learning_weight))
         
