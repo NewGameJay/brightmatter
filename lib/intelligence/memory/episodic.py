@@ -273,58 +273,59 @@ class EpisodicMemoryStore:
     def _list_tenants(self) -> List[str]:
         """List all tenant IDs with episodic memories.
 
-        Uses list_documents() which returns both real documents and
-        virtual parent-only documents that exist solely as parents of
-        subcollections.  Falls back to the firebase_client helper when
-        the raw SDK call is unavailable.
+        Tries list_subcollections first (works with both SupabaseStorage
+        and FirebaseClient).  Falls back to raw Firestore SDK when the
+        adapter doesn't support list_subcollections or returns empty.
         """
         try:
             if hasattr(self._firebase, 'list_subcollections'):
-                # system/intelligence is the document; episodic is a subcollection
-                # Tenant IDs are documents inside episodic, each having skill subcollections.
-                # list_subcollections gives us the child collections of the doc, but we
-                # need the documents inside the episodic collection.  Use raw SDK.
-                pass  # fall through to raw SDK path
+                tenants = self._firebase.list_subcollections(self._collection_base)
+                if tenants:
+                    logger.debug(f"_list_tenants: found {len(tenants)} tenants via list_subcollections")
+                    return tenants
 
-            with self._firebase._get_client() as client:
-                episodic_ref = (
-                    client.collection("system")
-                    .document("intelligence")
-                    .collection("episodic")
-                )
-                tenants = [doc.id for doc in episodic_ref.list_documents()]
-                logger.debug(f"_list_tenants: found {len(tenants)} tenants via list_documents()")
-                return tenants
+            if hasattr(self._firebase, '_get_client'):
+                with self._firebase._get_client() as client:
+                    episodic_ref = (
+                        client.collection("system")
+                        .document("intelligence")
+                        .collection("episodic")
+                    )
+                    tenants = [doc.id for doc in episodic_ref.list_documents()]
+                    logger.debug(f"_list_tenants: found {len(tenants)} tenants via list_documents()")
+                    return tenants
         except Exception as e:
             logger.error(f"_list_tenants FAILED: {e}", exc_info=True)
-            return []
+        return []
 
     def _list_skills_for_tenant(self, tenant_id: str) -> List[str]:
         """List all skill subcollections for a tenant.
 
-        Falls back to ``firebase_client.list_subcollections`` when available,
-        otherwise uses the raw SDK ``collections()`` call.
+        Tries list_subcollections first (works with SupabaseStorage and
+        FirebaseClient).  Falls back to raw Firestore SDK when unavailable.
         """
         doc_path = f"system/intelligence/episodic/{tenant_id}"
         try:
             if hasattr(self._firebase, 'list_subcollections'):
                 skills = self._firebase.list_subcollections(doc_path)
-                logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via helper")
-                return skills
+                if skills:
+                    logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via helper")
+                    return skills
 
-            with self._firebase._get_client() as client:
-                tenant_ref = (
-                    client.collection("system")
-                    .document("intelligence")
-                    .collection("episodic")
-                    .document(tenant_id)
-                )
-                skills = [col.id for col in tenant_ref.collections()]
-                logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via SDK")
-                return skills
+            if hasattr(self._firebase, '_get_client'):
+                with self._firebase._get_client() as client:
+                    tenant_ref = (
+                        client.collection("system")
+                        .document("intelligence")
+                        .collection("episodic")
+                        .document(tenant_id)
+                    )
+                    skills = [col.id for col in tenant_ref.collections()]
+                    logger.debug(f"_list_skills_for_tenant({tenant_id}): {len(skills)} via SDK")
+                    return skills
         except Exception as e:
             logger.error(f"_list_skills_for_tenant({tenant_id}) FAILED: {e}", exc_info=True)
-            return []
+        return []
 
     def decay_all(self, tenant_id: Optional[str] = None) -> Dict[str, int]:
         """

@@ -11,7 +11,6 @@ Run modes:
 Requires:
     SUPABASE_URL      — Supabase project URL
     SUPABASE_KEY      — Supabase service role key
-    FIREBASE_*        — Firebase credentials for BrightMatter engine
 """
 
 from __future__ import annotations
@@ -83,7 +82,7 @@ class BrightMatterWorker:
             # Run checkpoint processing
             try:
                 from lib.intelligence.outcomes.checkpoint_processor import CheckpointProcessor
-                processor = CheckpointProcessor(self.engine._firebase, self.bridge)
+                processor = CheckpointProcessor(self.engine.storage, self.bridge)
                 checkpoint_stats = processor.process_all_due()
                 stats["checkpoints"] = checkpoint_stats
             except Exception as e:

@@ -357,7 +357,6 @@ class SemanticMemoryStore:
                     condition=common_context,
                     recommendation=recommendation,
                     confidence=initial_confidence,
-                    expected_value=expected_value,
                     variance=variance,
                     evidence_count=len(episodes),
                     successes=successes,
@@ -365,6 +364,7 @@ class SemanticMemoryStore:
                     recent_accuracy=successes / len(episodes) if episodes else 0.5,
                     source_episodes=[e.episode_id for e in episodes],
                 )
+                pattern.expected_value = expected_value
                 
                 # Store the new pattern
                 self.store(pattern)
@@ -949,7 +949,6 @@ class SemanticMemoryStore:
                 condition=doc.get("condition", {}),
                 recommendation=doc.get("recommendation", {}),
                 confidence=doc.get("confidence", 0.5),
-                expected_value=doc.get("expected_value", 1.0),
                 variance=doc.get("variance", 1.0),
                 evidence_count=doc.get("evidence_count", 0),
                 successes=doc.get("successes", 0),
@@ -959,6 +958,7 @@ class SemanticMemoryStore:
                 updated_at=doc.get("updated_at", datetime.now(timezone.utc).isoformat()),
                 source_episodes=doc.get("source_episodes", []),
             )
+            pattern.expected_value = doc.get("expected_value", 1.0)
             
             return pattern
             

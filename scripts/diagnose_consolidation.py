@@ -32,13 +32,59 @@ def setup_logging(verbose: bool = False):
     )
 
 
-def check_firebase():
+def check_storage():
+    """Test storage connectivity — Supabase preferred, Firebase fallback."""
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    using_supabase = bool(supabase_url)
+
+    if using_supabase:
+        return _check_supabase()
+    return _check_firebase()
+
+
+def _check_supabase():
+    """Test Supabase connectivity."""
+    print("\n" + "=" * 60)
+    print("1. SUPABASE CONNECTIVITY")
+    print("=" * 60)
+
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    supabase_key = os.environ.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    print(f"  SUPABASE_URL: {'SET' if supabase_url else 'MISSING'}")
+    print(f"  SUPABASE_KEY: {'SET' if supabase_key else 'MISSING'}")
+
+    if not supabase_url or not supabase_key:
+        print("  [FAIL] SUPABASE_URL and SUPABASE_KEY must be set")
+        return None
+
+    try:
+        from lib.supabase_storage import SupabaseStorage
+        storage = SupabaseStorage()
+        print("  [OK] SupabaseStorage adapter initialized")
+
+        from lib.supabase_client import get_supabase
+        db = get_supabase()
+        result = db.table("episodic_memory").select("episode_id", count="exact").limit(1).execute()
+        count = getattr(result, "count", None) or (len(result.data) if result.data else 0)
+        print(f"  [OK] episodic_memory table accessible ({count} episodes)")
+
+        result = db.table("semantic_patterns").select("pattern_id", count="exact").limit(1).execute()
+        count = getattr(result, "count", None) or (len(result.data) if result.data else 0)
+        print(f"  [OK] semantic_patterns table accessible ({count} patterns)")
+
+        return storage
+    except Exception as e:
+        print(f"  [FAIL] Supabase initialization failed: {e}")
+        traceback.print_exc()
+        return None
+
+
+def _check_firebase():
     """Test Firebase connectivity."""
     print("\n" + "=" * 60)
     print("1. FIREBASE CONNECTIVITY")
     print("=" * 60)
 
-    # Pre-check: verify credential sources exist
     cred_json = (
         os.environ.get("SA_JSON", "")
         or os.environ.get("SA_JSON_KEY", "")
@@ -64,14 +110,8 @@ def check_firebase():
         print()
         print("  [FAIL] No valid Firebase credentials found in this environment.")
         print()
-        print("  To fix, add the service account JSON as a Cursor Cloud Agent secret:")
-        print("    1. Go to cursor.com → Dashboard → Cloud Agents → Secrets")
-        print("    2. Add a secret named FIREBASE_CREDENTIALS_JSON")
-        print("    3. Paste the full JSON content of your Firebase service account key")
-        print("    4. Re-run this script")
-        print()
-        print("  The service account JSON should start with {\"type\": \"service_account\", ...}")
-        print(f"  Target project: {project_id or '(set FIREBASE_PROJECT_ID)'}")
+        print("  To fix, set SUPABASE_URL + SUPABASE_KEY for Supabase storage,")
+        print("  or set FIREBASE_CREDENTIALS_JSON for Firebase storage.")
         return None
 
     try:
@@ -255,14 +295,17 @@ def main():
     print("BrightMatter Consolidation Diagnostic")
     print("=" * 60)
 
-    fb = check_firebase()
-    if fb is None:
-        print("\n[ABORT] Cannot proceed without Firebase")
+    storage = check_storage()
+    if storage is None:
+        print("\n[ABORT] Cannot proceed without storage backend")
         sys.exit(1)
 
-    episodic_store, tenants, tenant_skills = check_episodic_store(fb)
-    semantic_store = check_semantic_store(fb)
-    procedural_store = check_procedural_store(fb)
+    backend = "Supabase" if os.environ.get("SUPABASE_URL") else "Firebase"
+    print(f"\n  Backend: {backend}")
+
+    episodic_store, tenants, tenant_skills = check_episodic_store(storage)
+    semantic_store = check_semantic_store(storage)
+    procedural_store = check_procedural_store(storage)
 
     if not args.skip_full:
         run_full_consolidation(tenant_id=args.tenant_id)

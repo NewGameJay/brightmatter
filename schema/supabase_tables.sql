@@ -124,6 +124,168 @@ CREATE INDEX IF NOT EXISTS idx_events_report
   ON events(event_type, created_at)
   WHERE event_type IN ('report_viewed', 'report_shared', 'report_feedback');
 
+-- ── Internal Memory (BrightMatter only) ───────────────────────────
+--
+-- These tables replace Firebase Firestore as the authoritative store
+-- for BrightMatter's 4 memory layers. The shared tables above (events,
+-- predictions, outcomes, guidance_cache, patterns) remain unchanged.
+
+-- Episodic: individual experiences (prediction + outcome pairs)
+-- Weight decays daily via cron. Ready for consolidation at weight < 0.3.
+CREATE TABLE IF NOT EXISTS episodic_memory (
+  episode_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  domain TEXT DEFAULT 'generic',
+  prediction JSONB NOT NULL DEFAULT '{}',
+  outcome JSONB DEFAULT '{}',
+  weight FLOAT DEFAULT 1.0,
+  prediction_error FLOAT,
+  retrieval_count INT DEFAULT 0,
+  last_retrieved_at TIMESTAMPTZ,
+  consolidated_at TIMESTAMPTZ,
+  archived_at TIMESTAMPTZ,
+  source TEXT DEFAULT 'mh1hq',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Semantic: learned patterns generalized from episodes
+-- Confidence updated via Bayesian Beta distribution.
+CREATE TABLE IF NOT EXISTS semantic_patterns (
+  pattern_id TEXT PRIMARY KEY,
+  skill_name TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  client_id TEXT,
+  pattern_level TEXT DEFAULT 'segment',
+  condition JSONB DEFAULT '{}',
+  recommendation JSONB DEFAULT '{}',
+  confidence FLOAT DEFAULT 0.5,
+  expected_value FLOAT DEFAULT 1.0,
+  variance FLOAT DEFAULT 1.0,
+  expected_trajectory JSONB,
+  expected_time_to_target_days FLOAT,
+  variance_days FLOAT,
+  evidence_count INT DEFAULT 0,
+  successes INT DEFAULT 0,
+  failures INT DEFAULT 0,
+  recent_accuracy FLOAT DEFAULT 0.5,
+  source_episodes TEXT[],
+  last_reinforced_at TIMESTAMPTZ,
+  tenant_ids TEXT[],
+  pattern_type TEXT,
+  archived_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Procedural: cross-skill generalizations (validated by 3+ skills)
+-- Decays very slowly: confidence *= 0.995^days.
+CREATE TABLE IF NOT EXISTS procedural_knowledge (
+  knowledge_id TEXT PRIMARY KEY,
+  skill_name TEXT,
+  domain TEXT DEFAULT 'generic',
+  description TEXT,
+  condition JSONB DEFAULT '{}',
+  recommendation JSONB DEFAULT '{}',
+  confidence FLOAT DEFAULT 0.5,
+  cross_skill_confidence FLOAT DEFAULT 0.5,
+  validating_skills TEXT[],
+  validation_count INT DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Working memory predictions (persisted for deferred checkpoint lookup)
+CREATE TABLE IF NOT EXISTS working_predictions (
+  prediction_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  domain TEXT DEFAULT 'generic',
+  expected_signal FLOAT,
+  expected_baseline FLOAT,
+  confidence FLOAT DEFAULT 0.5,
+  context JSONB,
+  patterns_used TEXT[],
+  is_exploration BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Auxiliary tables for shadow testing, accuracy, and error history.
+-- These are optional — the system degrades gracefully without them.
+CREATE TABLE IF NOT EXISTS shadow_state (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS shadow_history (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS accuracy_reports (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS error_history (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS channel_timing (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS gold_standards (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_results (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── Indexes for internal memory ───────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_episodic_tenant_skill
+  ON episodic_memory(tenant_id, skill_name);
+
+CREATE INDEX IF NOT EXISTS idx_episodic_unconsolidated
+  ON episodic_memory(weight, consolidated_at)
+  WHERE consolidated_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_episodic_weight
+  ON episodic_memory(weight DESC);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_domain_skill
+  ON semantic_patterns(domain, skill_name);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_client
+  ON semantic_patterns(client_id, skill_name)
+  WHERE client_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_semantic_level
+  ON semantic_patterns(pattern_level, domain);
+
+CREATE INDEX IF NOT EXISTS idx_procedural_domain
+  ON procedural_knowledge(domain);
+
+CREATE INDEX IF NOT EXISTS idx_procedural_skills
+  ON procedural_knowledge USING GIN(validating_skills);
+
+CREATE INDEX IF NOT EXISTS idx_working_tenant
+  ON working_predictions(tenant_id, skill_name);
+
 -- ── RPC Functions ──────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION get_active_pairs(lookback_days INT DEFAULT 30)
@@ -132,4 +294,9 @@ RETURNS TABLE(skill_name TEXT, client_id TEXT) AS $$
   FROM events e
   WHERE e.skill_name IS NOT NULL
     AND e.created_at > NOW() - (lookback_days || ' days')::INTERVAL
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION get_distinct_tenants()
+RETURNS TABLE(tenant_id TEXT) AS $$
+  SELECT DISTINCT e.tenant_id FROM episodic_memory e
 $$ LANGUAGE sql STABLE;

@@ -17,10 +17,11 @@ import modal
 
 app = modal.App("brightmatter")
 
+WORKSPACE_PATH = "/workspace"
+
 bm_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
-        "firebase-admin>=6.5.0",
         "fastapi>=0.115.0",
         "uvicorn[standard]>=0.30.0",
         "pydantic>=2.9.0",
@@ -29,13 +30,10 @@ bm_image = (
         "supabase>=2.0.0",
         "httpx>=0.27.0",
     )
+    .add_local_dir(".", remote_path=WORKSPACE_PATH, copy=True)
 )
 
-bm_volume = modal.Volume.from_name("bm-workspace", create_if_missing=True)
-WORKSPACE_PATH = "/workspace"
-
 bm_secrets = [
-    modal.Secret.from_name("bm-firebase"),
     modal.Secret.from_name("bm-supabase"),
     modal.Secret.from_name("bm-api-key"),
 ]
@@ -52,7 +50,6 @@ def _setup_workspace():
 
 @app.function(
     image=bm_image,
-    volumes={WORKSPACE_PATH: bm_volume},
     secrets=bm_secrets,
     keep_warm=1,
     timeout=300,
@@ -70,7 +67,6 @@ def api_endpoint():
 
 @app.function(
     image=bm_image,
-    volumes={WORKSPACE_PATH: bm_volume},
     secrets=bm_secrets,
     timeout=600,
     schedule=modal.Period(minutes=15),
@@ -102,7 +98,6 @@ def worker_cron():
 
 @app.function(
     image=bm_image,
-    volumes={WORKSPACE_PATH: bm_volume},
     secrets=bm_secrets,
     timeout=600,
     schedule=modal.Cron("0 10 * * 0"),
@@ -168,7 +163,6 @@ def weekly_eval():
 
 @app.function(
     image=bm_image,
-    volumes={WORKSPACE_PATH: bm_volume},
     secrets=bm_secrets,
     timeout=600,
     schedule=modal.Cron("0 12 * * 1"),
@@ -193,7 +187,7 @@ def improvement_review():
         from lib.intelligence.improvement.analyzer import ImprovementAnalyzer
         from lib.intelligence.improvement.proposer import ImprovementProposer
 
-        analyzer = ImprovementAnalyzer(firebase_client=engine._firebase)
+        analyzer = ImprovementAnalyzer(firebase_client=engine.storage)
         candidates = analyzer.analyze()
         report["candidates_found"] = len(candidates)
 
@@ -224,7 +218,6 @@ def improvement_review():
 
 @app.function(
     image=bm_image,
-    volumes={WORKSPACE_PATH: bm_volume},
     secrets=bm_secrets,
     timeout=60,
 )
@@ -232,13 +225,13 @@ def health_check():
     """Verify engine initialization and Supabase connectivity."""
     _setup_workspace()
 
-    status = {"engine": False, "supabase": False, "firebase": False}
+    status = {"engine": False, "supabase": False}
 
     try:
         from lib.intelligence import IntelligenceEngine
         engine = IntelligenceEngine()
         status["engine"] = True
-        status["firebase"] = engine._firebase is not None
+        status["storage"] = engine.storage is not None
     except Exception as e:
         status["engine_error"] = str(e)
 

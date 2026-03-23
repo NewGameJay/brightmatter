@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 # Core types
@@ -69,6 +70,33 @@ if TYPE_CHECKING:
     from lib.firebase_client import FirebaseClient
 
 logger = logging.getLogger(__name__)
+
+
+def _auto_select_storage():
+    """Pick storage backend: Supabase if configured, then Firebase, then None."""
+    if os.environ.get("SUPABASE_URL"):
+        try:
+            from lib.supabase_storage import SupabaseStorage
+            client = SupabaseStorage()
+            logger.info("Using Supabase for memory storage")
+            return client
+        except Exception as e:
+            logger.warning("Supabase configured but init failed: %s", e)
+
+    try:
+        from lib.firebase_client import get_firebase_client
+        client = get_firebase_client()
+        logger.info("Using Firebase for memory storage")
+        return client
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("Firebase init failed: %s", e)
+
+    logger.warning(
+        "No storage backend available — intelligence memory will be in-memory only"
+    )
+    return None
 
 
 class IntelligenceEngine:
@@ -141,29 +169,15 @@ class IntelligenceEngine:
         Initialize the Intelligence Engine.
         
         Args:
-            firebase_client: Optional Firebase client for persistent storage.
-                If not provided, will be lazy-loaded from lib.firebase_client.
+            firebase_client: Optional storage client for persistent memory.
+                If not provided, auto-selects: Supabase when SUPABASE_URL is
+                set, otherwise Firebase, otherwise in-memory only.
         """
-        # Lazy load firebase client if not provided
         if firebase_client is None:
-            try:
-                from lib.firebase_client import get_firebase_client
-                firebase_client = get_firebase_client()
-            except ImportError:
-                logger.warning(
-                    "Firebase unavailable — intelligence memory will be in-memory only. "
-                    "Set FIREBASE_PROJECT_ID and credentials to enable persistent learning."
-                )
-                firebase_client = None
-            except Exception as e:
-                logger.warning(
-                    "Firebase init failed — intelligence memory will be in-memory only. "
-                    f"Error: {e}. Set FIREBASE_PROJECT_ID and credentials to enable "
-                    "persistent learning."
-                )
-                firebase_client = None
+            firebase_client = _auto_select_storage()
         
         self._firebase = firebase_client
+        self.storage = firebase_client
         
         # Initialize memory layers
         self.working = WorkingMemory(firebase_client=firebase_client)

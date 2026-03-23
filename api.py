@@ -387,7 +387,7 @@ async def process_checkpoints():
     bridge = _get_bridge()
     engine = _get_engine()
     from lib.intelligence.outcomes.checkpoint_processor import CheckpointProcessor
-    processor = CheckpointProcessor(engine._firebase, bridge)
+    processor = CheckpointProcessor(engine.storage, bridge)
     results = processor.process_all_due()
     return {"status": "completed", "results": results}
 
