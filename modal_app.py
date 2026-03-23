@@ -29,14 +29,25 @@ bm_image = (
         "numpy>=1.26.0",
         "supabase>=2.0.0",
         "httpx>=0.27.0",
+        "google-cloud-bigquery>=3.20.0",
+        "requests>=2.31.0",
     )
     .add_local_dir(".", remote_path=WORKSPACE_PATH, copy=True)
 )
 
-bm_secrets = [
+_required_secrets = [
     modal.Secret.from_name("bm-supabase"),
     modal.Secret.from_name("bm-api-key"),
 ]
+
+_optional_secrets = []
+for _name in ("bm-bigquery", "bm-airtable"):
+    try:
+        _optional_secrets.append(modal.Secret.from_name(_name, required_keys=[]))
+    except Exception:
+        pass
+
+bm_secrets = _required_secrets + _optional_secrets
 
 
 def _setup_workspace():

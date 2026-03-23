@@ -300,3 +300,18 @@ CREATE OR REPLACE FUNCTION get_distinct_tenants()
 RETURNS TABLE(tenant_id TEXT) AS $$
   SELECT DISTINCT e.tenant_id FROM episodic_memory e
 $$ LANGUAGE sql STABLE;
+
+-- ── BrightMatter Watermarks ──────────────────────────────────────
+-- Tracks ingestion cursors for external data sources (signals, BQ, etc.)
+-- so BrightMatter only processes new data on each cycle.
+
+CREATE TABLE IF NOT EXISTS bm_watermarks (
+  source TEXT PRIMARY KEY,
+  last_processed_id TEXT,
+  last_processed_at TIMESTAMPTZ,
+  metadata JSONB DEFAULT '{}',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bm_watermarks_source
+  ON bm_watermarks(source);
