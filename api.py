@@ -93,7 +93,8 @@ class JarvisEpisodeRequest(BaseModel):
 
 
 class GuidanceQuery(BaseModel):
-    tenant_id: str
+    skill_name: str
+    tenant_id: str = ""
     domain: str = "generic"
     context: Dict[str, Any] = Field(default_factory=dict)
 
@@ -142,8 +143,10 @@ class ConsolidationRequest(BaseModel):
 
 
 class PatternQuery(BaseModel):
+    skill_name: str
     tenant_id: str = ""
     domain: str = "generic"
+    limit: int = 20
 
 
 # ── Lifespan ────────────────────────────────────────────────────────
@@ -426,6 +429,80 @@ async def get_patterns(
 
     return {
         "skill_name": skill_name,
+        "pattern_count": len(patterns),
+        "patterns": patterns,
+    }
+
+
+@app.post("/api/v1/guidance/query", dependencies=[Depends(_verify_api_key)])
+async def query_guidance(req: GuidanceQuery):
+    """POST variant of guidance — accepts richer context from external callers."""
+    engine = _get_engine()
+    from lib.intelligence.types import Domain as DomainEnum
+
+    try:
+        d = DomainEnum(req.domain)
+    except ValueError:
+        d = DomainEnum.GENERIC
+
+    guidance = engine.get_guidance(
+        skill_name=req.skill_name,
+        tenant_id=req.tenant_id,
+        domain=d,
+    )
+
+    guidance_dict = guidance.to_dict() if hasattr(guidance, "to_dict") else {}
+
+    semantic_store = engine._semantic
+    patterns = []
+    if hasattr(semantic_store, "retrieve"):
+        raw_patterns = semantic_store.retrieve(
+            skill_name=req.skill_name, domain=d, limit=10,
+        )
+        patterns = [
+            p.to_dict() if hasattr(p, "to_dict") else str(p)
+            for p in (raw_patterns or [])
+        ]
+
+    return {
+        "skill_name": req.skill_name,
+        "guidance": guidance_dict,
+        "prediction": {
+            "predicted_outcome": guidance_dict.get("predicted_outcome"),
+            "predicted_baseline": guidance_dict.get("predicted_baseline"),
+            "pattern_expected_value": guidance_dict.get("pattern_expected_value"),
+            "confidence": guidance_dict.get("confidence", 0.5),
+            "is_exploration": guidance_dict.get("is_exploration", True),
+        },
+        "patterns": patterns,
+    }
+
+
+@app.post("/api/v1/patterns/query", dependencies=[Depends(_verify_api_key)])
+async def query_patterns(req: PatternQuery):
+    """POST variant of patterns — accepts structured filters from external callers."""
+    engine = _get_engine()
+    from lib.intelligence.types import Domain as DomainEnum
+
+    try:
+        d = DomainEnum(req.domain)
+    except ValueError:
+        d = DomainEnum.GENERIC
+
+    semantic_store = engine._semantic
+
+    patterns = []
+    if hasattr(semantic_store, "retrieve"):
+        raw_patterns = semantic_store.retrieve(
+            skill_name=req.skill_name, domain=d, limit=req.limit,
+        )
+        patterns = [
+            p.to_dict() if hasattr(p, "to_dict") else str(p)
+            for p in (raw_patterns or [])
+        ]
+
+    return {
+        "skill_name": req.skill_name,
         "pattern_count": len(patterns),
         "patterns": patterns,
     }
