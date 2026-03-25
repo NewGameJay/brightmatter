@@ -508,6 +508,313 @@ async def query_patterns(req: PatternQuery):
     }
 
 
+# ── Knowledge Center ────────────────────────────────────────────────
+
+@app.get("/api/v1/kc/overview")
+async def kc_overview():
+    """Aggregate stats for the knowledge center overview page."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    ep_total = db.table("episodic_memory").select("episode_id", count="exact").limit(0).execute()
+    pat_res = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count"
+    ).execute()
+    patterns = pat_res.data or []
+
+    clients_res = db.table("client_platform_data").select(
+        "client_id,client_name", count="exact"
+    ).limit(0).execute()
+    client_distinct = db.table("client_platform_data").select(
+        "client_id,client_name"
+    ).execute()
+    seen_clients: Dict[str, str] = {}
+    for r in (client_distinct.data or []):
+        cid = r.get("client_id", "")
+        if cid and cid not in seen_clients:
+            seen_clients[cid] = r.get("client_name", cid)
+
+    streams_res = db.table("client_platform_data").select(
+        "client_id,platform"
+    ).execute()
+    stream_ids = set(
+        f"{r.get('client_id','')}-{r.get('platform','')}"
+        for r in (streams_res.data or [])
+        if r.get("client_id")
+    )
+
+    try:
+        ref_res = db.table("reference_knowledge").select("id", count="exact").limit(0).execute()
+        ref_count = ref_res.count or 0
+    except Exception:
+        ref_count = 0
+    try:
+        sig_res = db.table("signals").select("id", count="exact").limit(0).execute()
+        sig_count = sig_res.count or 0
+    except Exception:
+        sig_count = 0
+    try:
+        ev_res = db.table("events").select("id", count="exact").limit(0).execute()
+        ev_count = ev_res.count or 0
+    except Exception:
+        ev_count = 0
+
+    wm_res = db.table("bm_watermarks").select("*").execute()
+    watermarks = {w.get("source", ""): w.get("last_processed_at", "") for w in (wm_res.data or [])}
+
+    domain_dist: Dict[str, int] = {}
+    for p in patterns:
+        d = p.get("domain") or "generic"
+        domain_dist[d] = domain_dist.get(d, 0) + 1
+
+    conf_tiers = {"high": 0, "medium": 0, "low": 0}
+    for p in patterns:
+        c = p.get("confidence") or 0
+        if c >= 0.7:
+            conf_tiers["high"] += 1
+        elif c >= 0.4:
+            conf_tiers["medium"] += 1
+        else:
+            conf_tiers["low"] += 1
+
+    avg_conf = sum(p.get("confidence") or 0 for p in patterns) / len(patterns) if patterns else 0
+
+    try:
+        mhos_events = db.table("events").select(
+            "source,event_type,skill_name,created_at"
+        ).order("created_at", desc=True).limit(10).execute()
+    except Exception:
+        mhos_events = type("R", (), {"data": []})()
+
+    try:
+        guidance_res = db.table("guidance_cache").select(
+            "skill_name,client_id,updated_at"
+        ).order("updated_at", desc=True).limit(10).execute()
+    except Exception:
+        guidance_res = type("R", (), {"data": []})()
+
+    return {
+        "total_clients": len(seen_clients),
+        "total_episodes": ep_total.count or 0,
+        "total_patterns": len(patterns),
+        "total_streams": len(stream_ids),
+        "total_reference": ref_count,
+        "total_signals": sig_count,
+        "total_events": ev_count,
+        "avg_confidence": round(avg_conf, 3),
+        "domain_distribution": domain_dist,
+        "confidence_tiers": conf_tiers,
+        "watermarks": watermarks,
+        "recent_mhos_events": mhos_events.data or [],
+        "recent_guidance": guidance_res.data or [],
+    }
+
+
+@app.get("/api/v1/kc/clients")
+async def kc_clients():
+    """Client index with per-client stats."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    cpd_res = db.table("client_platform_data").select(
+        "client_id,client_name,platform,stream_id,metric_date"
+    ).execute()
+    rows = cpd_res.data or []
+
+    clients: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        cid = r.get("client_id", "")
+        if not cid:
+            continue
+        if cid not in clients:
+            clients[cid] = {
+                "client_id": cid,
+                "client_name": r.get("client_name", cid),
+                "platforms": set(),
+                "streams": set(),
+                "latest_date": "",
+            }
+        clients[cid]["platforms"].add(r.get("platform", ""))
+        clients[cid]["streams"].add(r.get("stream_id", ""))
+        md = r.get("metric_date", "")
+        if md > clients[cid]["latest_date"]:
+            clients[cid]["latest_date"] = md
+
+    result = []
+    for cid, info in clients.items():
+        ep_count = db.table("episodic_memory").select(
+            "episode_id", count="exact"
+        ).eq("tenant_id", cid).limit(0).execute()
+        pat_count = db.table("semantic_patterns").select(
+            "pattern_id", count="exact"
+        ).eq("client_id", cid).limit(0).execute()
+        result.append({
+            "client_id": cid,
+            "client_name": info["client_name"],
+            "platforms": sorted(info["platforms"] - {""}),
+            "stream_count": len(info["streams"] - {""}),
+            "episode_count": ep_count.count or 0,
+            "pattern_count": pat_count.count or 0,
+            "last_activity": info["latest_date"],
+        })
+
+    result.sort(key=lambda x: x["episode_count"], reverse=True)
+    return result
+
+
+@app.get("/api/v1/kc/clients/{client_id}/streams")
+async def kc_client_streams(client_id: str):
+    """Data streams for a specific client."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    res = db.table("client_platform_data").select(
+        "stream_id,platform,metric_date,metrics,raw_record_count,source_account"
+    ).eq("client_id", client_id).order("metric_date", desc=True).execute()
+    rows = res.data or []
+
+    streams: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        sid = r.get("stream_id", "")
+        if not sid:
+            continue
+        if sid not in streams:
+            streams[sid] = {
+                "stream_id": sid,
+                "platform": r.get("platform", ""),
+                "source_account": r.get("source_account", ""),
+                "latest_date": r.get("metric_date", ""),
+                "earliest_date": r.get("metric_date", ""),
+                "row_count": 0,
+                "latest_metrics": r.get("metrics") or {},
+            }
+        streams[sid]["row_count"] += 1
+        md = r.get("metric_date", "")
+        if md < streams[sid]["earliest_date"]:
+            streams[sid]["earliest_date"] = md
+
+    return sorted(streams.values(), key=lambda x: x["platform"])
+
+
+@app.get("/api/v1/kc/clients/{client_id}/episodes")
+async def kc_client_episodes(client_id: str, limit: int = 100):
+    """Recent episodes for a specific client."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    res = db.table("episodic_memory").select(
+        "episode_id,skill_name,domain,prediction,outcome,weight,prediction_error,created_at"
+    ).eq("tenant_id", client_id).order("created_at", desc=True).limit(limit).execute()
+
+    return res.data or []
+
+
+@app.get("/api/v1/kc/clients/{client_id}/patterns")
+async def kc_client_patterns(client_id: str):
+    """Patterns for a specific client (client-specific + universal)."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    client_pats = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count,successes,failures,"
+        "recent_accuracy,condition,recommendation,updated_at,created_at,expected_value"
+    ).eq("client_id", client_id).order("confidence", desc=True).execute()
+
+    universal_pats = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count,successes,failures,"
+        "recent_accuracy,condition,recommendation,updated_at,created_at,expected_value"
+    ).is_("client_id", "null").order("confidence", desc=True).limit(50).execute()
+
+    return {
+        "client_patterns": client_pats.data or [],
+        "universal_patterns": universal_pats.data or [],
+    }
+
+
+@app.get("/api/v1/kc/patterns")
+async def kc_all_patterns(domain: str = "", min_confidence: float = 0.0):
+    """All patterns, optionally filtered."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    query = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count,successes,failures,"
+        "recent_accuracy,condition,recommendation,client_id,updated_at,created_at"
+    ).gte("confidence", min_confidence).order("confidence", desc=True)
+
+    if domain:
+        query = query.eq("domain", domain)
+
+    res = query.limit(200).execute()
+    return res.data or []
+
+
+@app.get("/api/v1/kc/reference")
+async def kc_reference(search: str = ""):
+    """Reference knowledge items."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    try:
+        query = db.table("reference_knowledge").select(
+            "id,source,category,title,summary,tags,levers,expert_handle,confidence_weight,created_at"
+        ).order("created_at", desc=True)
+        res = query.limit(200).execute()
+        items = res.data or []
+    except Exception:
+        return []
+
+    if search:
+        s = search.lower()
+        items = [i for i in items if s in (i.get("title") or "").lower()
+                 or s in (i.get("summary") or "").lower()
+                 or s in str(i.get("tags") or []).lower()]
+
+    return items
+
+
+@app.get("/api/v1/kc/connections")
+async def kc_connections():
+    """MH-OS trigger connection status."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    triggers = [
+        {"task": "channel-advisor", "bm_skill": "channel-reallocation", "domain": "paid_media"},
+        {"task": "daily-pulse", "bm_skill": "daily-health-pulse", "domain": "operations"},
+        {"task": "revenue-health", "bm_skill": "revenue-monitoring", "domain": "revenue"},
+    ]
+
+    result = []
+    for t in triggers:
+        ep_res = db.table("episodic_memory").select(
+            "episode_id,created_at"
+        ).eq("skill_name", t["bm_skill"]).order("created_at", desc=True).limit(1).execute()
+
+        try:
+            guid_res = db.table("guidance_cache").select(
+                "updated_at,confidence"
+            ).eq("skill_name", t["bm_skill"]).limit(1).execute()
+        except Exception:
+            guid_res = type("R", (), {"data": []})()
+
+        last_write = (ep_res.data[0]["created_at"] if ep_res.data else None)
+        last_read = (guid_res.data[0]["updated_at"] if guid_res.data else None)
+        confidence = (guid_res.data[0]["confidence"] if guid_res.data else None)
+
+        result.append({
+            "task": t["task"],
+            "bm_skill": t["bm_skill"],
+            "domain": t["domain"],
+            "last_write": last_write,
+            "last_read": last_read,
+            "confidence": confidence,
+            "episode_count": len(ep_res.data or []),
+        })
+
+    return result
+
+
 # ── Dashboard ───────────────────────────────────────────────────────
 
 @app.get("/api/v1/dashboard/data")

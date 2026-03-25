@@ -433,6 +433,174 @@ def ingest_courses() -> int:
     return _batch_upsert(rows, "b2c-courses")
 
 
+# ── DTC-OS Semantic Layer & Intelligence ──────────────────────────
+
+def ingest_dtc_intelligence() -> int:
+    rows: List[Dict[str, Any]] = []
+
+    semantic_files = [
+        ("glossary.yaml", "dtc-glossary", "analytics", 0.9,
+         "Canonical metric definitions used across DTC-OS signals and reports"),
+        ("entities.yaml", "dtc-entities", "analytics", 0.9,
+         "Core data entities and relationships for Shopify-based DTC brands"),
+        ("cohort-methodology.md", "dtc-cohort-methodology", "analytics", 1.0,
+         "When to use real-time vs cohort measurement, minimum sample sizes"),
+    ]
+    sem_dir = DTC_OS_ROOT / "00_data" / "semantic-layer"
+    for fname, title_slug, category, weight, summary in semantic_files:
+        fpath = sem_dir / fname
+        if not fpath.exists():
+            logger.warning(f"Semantic layer file not found: {fpath}")
+            continue
+        text = fpath.read_text(errors="replace")
+        tags = _infer_tags(text) + ["dtc", "semantic-layer"]
+        levers = _infer_levers(text)
+        rows.append({
+            "source": "dtc-semantic-layer",
+            "category": category,
+            "title": title_slug,
+            "summary": summary[:200],
+            "content": {"body": text[:10000], "filename": fname},
+            "tags": list(set(tags)),
+            "levers": list(set(levers)),
+            "expert_handle": None,
+            "confidence_weight": weight,
+        })
+
+    intel_files = [
+        ("driver-tree.md", "dtc-driver-tree", "strategy", 1.0,
+         "Revenue decomposition tree mapping every lever to execution modules"),
+        ("compounding-loops.md", "dtc-compounding-loops", "strategy", 0.9,
+         "6 virtuous cycles where each execution output feeds the next"),
+        ("growth-analytics-advisory.md", "growth-analytics-advisory", "analytics", 0.9,
+         "L1/L2/L3 reporting framework for strategic, tactical, and operational decisions"),
+    ]
+    intel_dir = DTC_OS_ROOT / "20_intelligence"
+    for fname, title_slug, category, weight, summary in intel_files:
+        fpath = intel_dir / fname
+        if not fpath.exists():
+            continue
+        text = fpath.read_text(errors="replace")
+        tags = _infer_tags(text) + ["dtc", "intelligence"]
+        levers = _infer_levers(text)
+        rows.append({
+            "source": "dtc-intelligence",
+            "category": category,
+            "title": title_slug,
+            "summary": summary[:200],
+            "content": {"body": text[:10000], "filename": fname},
+            "tags": list(set(tags)),
+            "levers": list(set(levers)),
+            "expert_handle": None,
+            "confidence_weight": weight,
+        })
+
+    strat_dir = DTC_OS_ROOT / "30_strategy"
+    for md_path in sorted(strat_dir.glob("*.md")) if strat_dir.exists() else []:
+        text = md_path.read_text(errors="replace")
+        lines = text.split("\n")
+        title = next((l.lstrip("# ").strip() for l in lines if l.startswith("# ")), md_path.stem)
+        tags = _infer_tags(text) + ["dtc", "strategy"]
+        levers = _infer_levers(text)
+        first_para = next(
+            (l.strip()[:200] for l in lines if l.strip() and not l.startswith("#") and not l.startswith(">")),
+            title,
+        )
+        rows.append({
+            "source": "dtc-strategy",
+            "category": "strategy",
+            "title": md_path.stem,
+            "summary": first_para[:200],
+            "content": {"body": text[:8000], "filename": md_path.name},
+            "tags": list(set(tags)),
+            "levers": list(set(levers)),
+            "expert_handle": None,
+            "confidence_weight": 0.8,
+        })
+
+    logger.info(f"Prepared {len(rows)} DTC-OS intelligence rows")
+    if not rows:
+        return 0
+    by_source: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_source.setdefault(r["source"], []).append(r)
+    total = 0
+    for src, src_rows in by_source.items():
+        total += _batch_upsert(src_rows, src)
+    return total
+
+
+# ── MH-OS Domain Knowledge ───────────────────────────────────────
+
+def ingest_mhos_knowledge() -> int:
+    MH_OS_ROOT = Path(os.environ.get("MH_OS_PATH", "/Applications/MH1/mh-os"))
+    rows: List[Dict[str, Any]] = []
+
+    shared_dir = MH_OS_ROOT / "src" / "trigger" / "shared"
+    if shared_dir.exists():
+        for ts_file in sorted(shared_dir.glob("*.ts")):
+            text = ts_file.read_text(errors="replace")
+            if len(text) < 100:
+                continue
+            tags = _infer_tags(text) + ["mh-os", "trigger-dev"]
+            rows.append({
+                "source": "mhos-trigger-patterns",
+                "category": "strategy",
+                "title": f"mhos-shared/{ts_file.stem}",
+                "summary": f"MH-OS shared module: {ts_file.stem} — reusable patterns for trigger tasks",
+                "content": {"filename": ts_file.name, "module_type": "shared"},
+                "tags": list(set(tags)),
+                "levers": [],
+                "expert_handle": None,
+                "confidence_weight": 0.6,
+            })
+
+    trigger_dirs = [
+        ("channel-advisor", "channel-reallocation", "paid_media",
+         "Reallocates budget across channels based on performance signals"),
+        ("daily-pulse", "daily-health-pulse", "operations",
+         "Daily anomaly detection across all client metrics"),
+        ("revenue-health", "revenue-monitoring", "revenue",
+         "Monthly revenue trend analysis with cohort tracking"),
+    ]
+    for task_dir, skill, domain, summary in trigger_dirs:
+        task_path = MH_OS_ROOT / "src" / "trigger" / task_dir
+        if not task_path.exists():
+            continue
+        main_ts = task_path / f"{task_dir}.ts"
+        if not main_ts.exists():
+            continue
+        text = main_ts.read_text(errors="replace")
+        tags = _infer_tags(text) + ["mh-os", "trigger-dev", domain]
+        levers = _infer_levers(text)
+        rows.append({
+            "source": "mhos-triggers",
+            "category": domain.replace("_", "-"),
+            "title": f"mhos-trigger/{task_dir}",
+            "summary": summary[:200],
+            "content": {
+                "skill_name": skill,
+                "domain": domain,
+                "filename": main_ts.name,
+            },
+            "tags": list(set(tags)),
+            "levers": list(set(levers)),
+            "expert_handle": None,
+            "confidence_weight": 0.7,
+        })
+
+    logger.info(f"Prepared {len(rows)} MH-OS knowledge rows")
+    if not rows:
+        return 0
+    by_source: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_source.setdefault(r["source"], []).append(r)
+    total = 0
+    for src, src_rows in by_source.items():
+        total += _batch_upsert(src_rows, src)
+    return total
+
+
 # ── CLI ────────────────────────────────────────────────────────────
 
 def main():
@@ -447,6 +615,8 @@ def main():
     parser.add_argument("--tactics", action="store_true", help="Ingest tactics vault")
     parser.add_argument("--ads", action="store_true", help="Ingest ad vault examples")
     parser.add_argument("--courses", action="store_true", help="Ingest B2C Tech Path courses")
+    parser.add_argument("--dtc", action="store_true", help="Ingest DTC-OS semantic layer + intelligence")
+    parser.add_argument("--mhos", action="store_true", help="Ingest MH-OS trigger task knowledge")
     parser.add_argument("--all", action="store_true", help="Run all ingestion sources")
     args = parser.parse_args()
 
@@ -454,7 +624,7 @@ def main():
         create_table()
         return
 
-    run_all = args.all or not any([args.experts, args.tactics, args.ads, args.courses])
+    run_all = args.all or not any([args.experts, args.tactics, args.ads, args.courses, args.dtc, args.mhos])
     totals = {}
 
     if run_all or args.experts:
@@ -468,6 +638,12 @@ def main():
 
     if run_all or args.courses:
         totals["courses"] = ingest_courses()
+
+    if run_all or args.dtc:
+        totals["dtc_intelligence"] = ingest_dtc_intelligence()
+
+    if run_all or args.mhos:
+        totals["mhos_knowledge"] = ingest_mhos_knowledge()
 
     logger.info(f"Ingestion complete: {totals}")
 

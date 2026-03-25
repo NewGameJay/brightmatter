@@ -3,611 +3,791 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BrightMatter — Intelligence Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<title>BrightMatter — Knowledge Center</title>
 <style>
 :root {
-  --bg: #f7f7f8;
-  --white: #ffffff;
-  --border: #e2e4e9;
-  --border-light: #eef0f3;
-  --text: #1a1d24;
-  --text-secondary: #5c6370;
-  --text-dim: #9199a6;
+  --bg: #f5f5f4;
+  --sidebar-bg: #fff;
+  --card-bg: #fff;
+  --border: #e0e0e0;
+  --border-light: #ebebeb;
+  --text: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
   --accent: #2563eb;
-  --accent-light: #eff4ff;
+  --accent-light: #eff6ff;
   --green: #16a34a;
-  --green-bg: #f0fdf4;
-  --red: #dc2626;
-  --red-bg: #fef2f2;
+  --green-light: #f0fdf4;
   --amber: #d97706;
-  --amber-bg: #fffbeb;
+  --amber-light: #fffbeb;
+  --red: #dc2626;
+  --red-light: #fef2f2;
   --purple: #7c3aed;
-  --purple-bg: #f5f3ff;
-  --teal: #0d9488;
-  --teal-bg: #f0fdfa;
-  --row-hover: #f4f6f9;
+  --purple-light: #f5f3ff;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --sidebar-w: 240px;
+  --radius: 6px;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-html, body { height:100%; background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; }
-::selection { background:var(--accent); color:#fff; }
-::-webkit-scrollbar { width:6px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:#d0d3da; border-radius:3px; }
-::-webkit-scrollbar-thumb:hover { background:#b0b5bf; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text); display:flex; height:100vh; overflow:hidden; font-size:13px; }
 
-/* Header */
-.header {
-  position:sticky; top:0; z-index:20; height:52px;
-  display:flex; align-items:center; justify-content:space-between;
-  padding:0 24px; background:var(--white);
-  border-bottom:1px solid var(--border);
-}
-.logo { display:flex; align-items:center; gap:10px; }
-.logo-dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
-.logo-name { font-weight:700; font-size:14px; letter-spacing:-.2px; }
-.logo-tag { font-size:10px; color:var(--green); font-family:'IBM Plex Mono',monospace; font-weight:500; background:var(--green-bg); padding:2px 8px; border-radius:10px; }
+.sidebar { width: var(--sidebar-w); min-width: var(--sidebar-w); background: var(--sidebar-bg); border-right: 1px solid var(--border); display:flex; flex-direction:column; overflow-y:auto; }
+.sidebar-brand { padding:16px 16px 10px; display:flex; align-items:center; gap:8px; }
+.sidebar-brand .dot { width:8px; height:8px; border-radius:50%; background: var(--green); flex-shrink:0; }
+.sidebar-brand h1 { font-size:14px; font-weight:700; letter-spacing:-0.4px; }
+.sidebar-brand .tag { font-size:10px; color: var(--text-muted); background:#f4f4f5; padding:1px 6px; border-radius:3px; margin-left:auto; }
+.nav-group { padding:4px 0; }
+.nav-group-label { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.6px; color: var(--text-muted); padding:12px 16px 4px; }
+.nav-item { display:flex; align-items:center; gap:8px; padding:7px 12px 7px 16px; cursor:pointer; color: var(--text-secondary); border-left:2px solid transparent; transition:all 0.08s; font-size:13px; }
+.nav-item:hover { background:#f9f9f9; color: var(--text); }
+.nav-item.active { background: var(--accent-light); color: var(--accent); border-left-color: var(--accent); font-weight:600; }
+.nav-item .nav-count { margin-left:auto; font-size:12px; font-weight:700; font-family: var(--mono); color: var(--text); background:#f4f4f5; padding:1px 7px; border-radius:10px; min-width:28px; text-align:center; }
+.nav-item.active .nav-count { background: #dbeafe; color: var(--accent); }
+.nav-icon { font-size:14px; width:18px; text-align:center; flex-shrink:0; }
+.client-toggle { cursor:pointer; padding:7px 12px 7px 16px; font-size:13px; display:flex; align-items:center; gap:8px; color: var(--text-secondary); }
+.client-toggle:hover { color: var(--text); }
+.client-toggle .nav-count { margin-left:auto; font-size:12px; font-weight:700; font-family: var(--mono); color: var(--text); background:#f4f4f5; padding:1px 7px; border-radius:10px; min-width:28px; text-align:center; }
+.client-tree { overflow:hidden; transition:max-height 0.2s; max-height:0; }
+.client-tree.open { max-height:500px; }
+.client-tree .nav-item { padding-left:36px; font-size:12px; color: var(--text-muted); }
+.client-tree .nav-item:hover { color: var(--text); }
 
-.stats-bar { display:flex; gap:24px; }
-.stat { text-align:center; min-width:60px; }
-.stat-val { font-weight:700; font-size:20px; font-family:'IBM Plex Mono',monospace; color:var(--text); transition:color .3s; }
-.stat-val.flash { color:var(--accent); }
-.stat-label { font-size:10px; color:var(--text-dim); font-weight:500; margin-top:1px; text-transform:uppercase; letter-spacing:.5px; }
+.main { flex:1; overflow-y:auto; padding:20px 28px; }
+.page { display:none; }
+.page.active { display:block; }
+.page-header { margin-bottom:20px; }
+.page-title { font-size:18px; font-weight:700; letter-spacing:-0.3px; }
+.page-subtitle { font-size:12px; color: var(--text-muted); margin-top:2px; }
 
-.meta-right { display:flex; align-items:center; gap:12px; }
-.refresh-badge { font-size:10px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; text-align:right; line-height:1.5; }
-.refresh-badge .live { color:var(--green); font-weight:600; }
+.stat-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:20px; }
+.stat-card { background: var(--card-bg); border:1px solid var(--border-light); border-radius: var(--radius); padding:14px 16px; position:relative; }
+.stat-card .label { font-size:11px; color: var(--text-muted); margin-bottom:4px; display:flex; align-items:center; gap:4px; }
+.stat-card .label .hint { cursor:help; font-size:10px; color: var(--text-muted); border:1px solid var(--border); border-radius:50%; width:14px; height:14px; display:inline-flex; align-items:center; justify-content:center; }
+.stat-card .value { font-size:22px; font-weight:700; font-family: var(--mono); letter-spacing:-0.5px; }
+.stat-card .detail { font-size:11px; color: var(--text-muted); margin-top:2px; }
+.stat-card .indicator { position:absolute; top:0; left:0; width:3px; height:100%; border-radius: var(--radius) 0 0 var(--radius); }
+.stat-card .indicator.blue { background: var(--accent); }
+.stat-card .indicator.green { background: var(--green); }
+.stat-card .indicator.purple { background: var(--purple); }
+.stat-card .indicator.amber { background: var(--amber); }
 
-/* Grid */
-.grid {
-  display:grid; padding:16px; gap:16px;
-  grid-template-columns:1fr 1fr 1fr;
-  grid-template-rows:1fr 1fr;
-  height:calc(100vh - 52px);
-}
-.panel {
-  background:var(--white); border:1px solid var(--border); border-radius:8px;
-  display:flex; flex-direction:column; overflow:hidden; min-height:0;
-}
-.panel-header {
-  padding:12px 16px 10px; display:flex; align-items:center; justify-content:space-between;
-  border-bottom:1px solid var(--border-light); flex-shrink:0;
-}
-.panel-title {
-  font-size:13px; font-weight:600; color:var(--text);
-  display:flex; align-items:center; gap:8px;
-}
-.panel-icon { font-size:14px; }
-.panel-count { font-size:11px; font-family:'IBM Plex Mono',monospace; color:var(--text-dim); background:var(--bg); padding:2px 8px; border-radius:10px; }
-.panel-filters {
-  display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--border-light); flex-shrink:0; background:var(--bg);
-}
-.filter-btn {
-  font-size:11px; font-weight:500; padding:4px 10px; border-radius:6px;
-  background:transparent; border:1px solid transparent; color:var(--text-secondary); cursor:pointer;
-  transition:all .15s;
-}
-.filter-btn:hover { background:var(--white); border-color:var(--border); }
-.filter-btn.active { background:var(--white); border-color:var(--border); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.04); }
-.panel-scroll { flex:1; overflow-y:auto; min-height:0; }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color: var(--text-muted); padding:8px 10px; border-bottom:1px solid var(--border); font-weight:600; }
+td { padding:9px 10px; border-bottom:1px solid var(--border-light); }
+tr:hover { background:#fafafa; }
+tr.clickable { cursor:pointer; }
+tr.clickable:hover { background: var(--accent-light); }
 
-/* Table rows */
-.row {
-  display:flex; align-items:flex-start; padding:8px 16px; border-bottom:1px solid var(--border-light);
-  transition:background .1s; font-size:13px; gap:10px; min-height:40px;
-}
-.row:hover { background:var(--row-hover); }
-.row.flash-row { animation:flashIn .5s ease-out; }
-@keyframes flashIn { 0%{background:var(--accent-light)} 100%{background:transparent} }
+.badge { display:inline-block; padding:2px 7px; border-radius:3px; font-size:11px; font-weight:500; }
+.badge-green { background: var(--green-light); color: var(--green); }
+.badge-amber { background: var(--amber-light); color: var(--amber); }
+.badge-red { background: var(--red-light); color: var(--red); }
+.badge-purple { background: var(--purple-light); color: var(--purple); }
+.badge-blue { background: var(--accent-light); color: var(--accent); }
 
-.row-time {
-  width:60px; flex-shrink:0; font-size:11px; color:var(--text-dim);
-  font-family:'IBM Plex Mono',monospace; padding-top:1px; line-height:1.5;
-}
-.row-icon { width:24px; flex-shrink:0; font-size:14px; text-align:center; padding-top:1px; }
-.row-body { flex:1; min-width:0; }
-.row-text { font-size:13px; line-height:1.4; color:var(--text); }
-.row-detail { font-size:11px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; margin-top:2px; }
+.conf-bar { display:flex; align-items:center; gap:6px; }
+.conf-track { width:60px; height:5px; background:#e5e5e5; border-radius:3px; overflow:hidden; }
+.conf-fill { height:100%; border-radius:3px; }
+.conf-fill.high { background: var(--green); }
+.conf-fill.med { background: var(--amber); }
+.conf-fill.low { background: var(--red); }
 
-/* Badges */
-.badge {
-  flex-shrink:0; font-size:10px; font-weight:500;
-  padding:2px 8px; border-radius:10px; white-space:nowrap;
-}
-.badge-campaign { background:var(--red-bg); color:var(--red); }
-.badge-revenue { background:var(--teal-bg); color:var(--teal); }
-.badge-content { background:var(--amber-bg); color:var(--amber); }
-.badge-health { background:var(--green-bg); color:var(--green); }
-.badge-generic { background:var(--bg); color:var(--text-secondary); }
-.badge-event { background:var(--accent-light); color:var(--accent); }
-.badge-episode { background:var(--purple-bg); color:var(--purple); }
-.badge-pattern { background:var(--amber-bg); color:var(--amber); }
-.badge-signal { background:var(--red-bg); color:var(--red); }
-.badge-sync { background:var(--teal-bg); color:var(--teal); }
-.badge-guidance { background:var(--purple-bg); color:var(--purple); }
+.card-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap:10px; margin-bottom:16px; }
+.card { background: var(--card-bg); border:1px solid var(--border-light); border-radius: var(--radius); padding:14px; }
+.card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.card-title { font-size:13px; font-weight:600; }
 
-/* Confidence bar */
-.conf-bar { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-.conf-track { width:48px; height:5px; background:var(--bg); border-radius:3px; overflow:hidden; }
-.conf-fill { height:100%; border-radius:3px; transition:width .4s; }
-.conf-val { font-size:11px; font-family:'IBM Plex Mono',monospace; font-weight:500; width:32px; }
+.section { margin-bottom:20px; }
+.section-title { font-size:13px; font-weight:600; margin-bottom:10px; }
 
-/* Streams */
-.stream-status { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border-light); }
-.stream-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-.stream-dot.active { background:var(--green); }
-.stream-dot.stale { background:var(--amber); }
-.stream-dot.dead { background:var(--red); }
-.stream-info { flex:1; }
-.stream-name { font-size:13px; font-weight:600; }
-.stream-ts { font-size:11px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; margin-top:2px; }
+.tabs { display:flex; gap:0; margin-bottom:16px; border-bottom:1px solid var(--border); }
+.tab { padding:8px 14px; font-size:12px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; color: var(--text-muted); }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight:600; }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
 
-.empty-state { padding:24px 16px; text-align:center; color:var(--text-dim); font-size:12px; }
+.feed-item { display:flex; gap:10px; padding:7px 0; border-bottom:1px solid var(--border-light); }
+.feed-item .ts { font-family: var(--mono); font-size:11px; color: var(--text-muted); min-width:90px; white-space:nowrap; }
+.feed-item .body { flex:1; line-height:1.4; }
+.feed-item .detail { font-size:11px; color: var(--text-muted); }
 
-/* Loading */
-#loading {
-  position:fixed; inset:0; z-index:50; background:var(--white);
-  display:flex; align-items:center; justify-content:center; flex-direction:column; gap:12px;
-  transition:opacity .4s;
-}
-#loading.done { opacity:0; pointer-events:none; }
-.spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
-@keyframes spin { to{transform:rotate(360deg)} }
+.filter-bar { display:flex; gap:8px; margin-bottom:12px; align-items:center; }
+.filter-bar select, .filter-bar input[type="text"] { font-size:12px; padding:5px 8px; border:1px solid var(--border); border-radius:4px; background:#fff; }
+.filter-bar input[type="range"] { width:100px; }
+.filter-bar label { font-size:11px; color: var(--text-muted); }
 
-@media(max-width:1100px) { .grid { grid-template-columns:1fr 1fr; } }
-@media(max-width:700px) { .grid { grid-template-columns:1fr; } .stats-bar { gap:12px; } .stat-val { font-size:16px; } }
+.stream-row { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:4px; padding:12px 0; border-bottom:1px solid var(--border-light); align-items:center; }
+.stream-row:first-child { padding-top:0; }
+.stream-row .platform-badge { font-weight:600; font-size:12px; }
+.stream-row .date-range { font-size:11px; color: var(--text-muted); }
+
+.repo-card { background: var(--card-bg); border:1px solid var(--border-light); border-radius: var(--radius); padding:16px; margin-bottom:10px; cursor:pointer; transition:border-color 0.1s,box-shadow 0.1s; }
+.repo-card:hover { border-color: var(--accent); box-shadow:0 2px 8px rgba(37,99,235,0.08); }
+.repo-card .repo-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.repo-card .repo-name { font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; }
+.repo-card .repo-logo { width:28px; height:28px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; color:#fff; flex-shrink:0; }
+.repo-card .repo-desc { font-size:12px; color: var(--text-secondary); margin-bottom:10px; line-height:1.5; }
+.repo-card .repo-meta { display:flex; gap:12px; margin-bottom:10px; }
+.repo-card .repo-meta-item { font-size:11px; color: var(--text-muted); display:flex; align-items:center; gap:4px; }
+.repo-tasks { display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:8px; }
+.task-chip { background:#f9f9f9; border:1px solid var(--border-light); border-radius:4px; padding:8px 10px; }
+.task-chip .task-name { font-size:12px; font-weight:600; font-family: var(--mono); }
+.task-chip .task-meta { font-size:11px; color: var(--text-muted); margin-top:2px; }
+
+.loading { text-align:center; padding:30px; color: var(--text-muted); }
+.back-link { font-size:12px; color: var(--accent); cursor:pointer; margin-bottom:10px; display:inline-block; }
+.back-link:hover { text-decoration:underline; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--text-muted); }
+.small { font-size:11px; }
+.truncate { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+[title] { cursor:help; }
 </style>
 </head>
 <body>
 
-<div id="loading"><div class="spinner"></div><div style="font-size:11px;color:var(--text-dim);font-family:'IBM Plex Mono',monospace">Loading...</div></div>
-
-<div class="header">
-  <div class="logo">
-    <div class="logo-dot"></div>
-    <span class="logo-name">BrightMatter</span>
-    <span class="logo-tag">LIVE</span>
+<div class="sidebar">
+  <div class="sidebar-brand">
+    <span class="dot"></span>
+    <h1>BrightMatter</h1>
+    <span class="tag">v2</span>
   </div>
-  <div class="stats-bar" id="stats-bar"></div>
-  <div class="meta-right">
-    <div class="refresh-badge">
-      <span class="live">&#9679; Live</span> &mdash; 10s<br>
-      <span id="last-update"></span>
+  <div class="nav-group">
+    <div class="nav-item active" data-page="overview">
+      <span class="nav-icon">&#9671;</span> Dashboard
+    </div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">Intelligence</div>
+    <div class="client-toggle" id="client-toggle-btn">
+      <span class="nav-icon" id="client-arrow">&#9656;</span> Clients
+      <span class="nav-count" id="client-count">--</span>
+    </div>
+    <div id="client-tree" class="client-tree"></div>
+    <div class="nav-item" data-page="patterns">
+      <span class="nav-icon">&#9670;</span> Learned Patterns
+      <span class="nav-count" id="nav-pat-count">--</span>
+    </div>
+    <div class="nav-item" data-page="reference">
+      <span class="nav-icon">&#9783;</span> Reference Knowledge
+      <span class="nav-count" id="nav-ref-count">--</span>
+    </div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">System</div>
+    <div class="nav-item" data-page="connections">
+      <span class="nav-icon">&#8644;</span> Connections
+    </div>
+    <div class="nav-item" data-page="activity">
+      <span class="nav-icon">&#9776;</span> Activity Log
     </div>
   </div>
 </div>
 
-<div class="grid">
-  <div class="panel" id="panel-feed">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#9889;</span> Activity Feed</div>
-      <div class="panel-count" id="feed-count"></div>
+<div class="main">
+
+  <!-- Dashboard -->
+  <div id="page-overview" class="page active">
+    <div class="page-header">
+      <div class="page-title">Dashboard</div>
+      <div class="page-subtitle">Real-time intelligence health — all data live from Supabase</div>
     </div>
-    <div class="panel-filters" id="feed-filters">
-      <button class="filter-btn active" data-filter="all">All</button>
-      <button class="filter-btn" data-filter="episode">Episodes</button>
-      <button class="filter-btn" data-filter="pattern">Patterns</button>
-      <button class="filter-btn" data-filter="event">Events</button>
-      <button class="filter-btn" data-filter="signal">Signals</button>
+    <div id="overview-stats" class="stat-row"></div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:20px;">
+      <div class="section">
+        <div class="section-title">Data Sources</div>
+        <div id="data-sources"></div>
+      </div>
+      <div class="section">
+        <div class="section-title">Recent Activity</div>
+        <div id="overview-feed"></div>
+      </div>
     </div>
-    <div class="panel-scroll" id="feed-scroll"></div>
   </div>
 
-  <div class="panel" id="panel-patterns">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#10024;</span> Learned Patterns</div>
-      <div class="panel-count" id="pattern-count"></div>
+  <!-- Clients -->
+  <div id="page-clients" class="page">
+    <div class="page-header">
+      <div class="page-title">Clients</div>
+      <div class="page-subtitle">Per-client intelligence coverage</div>
     </div>
-    <div class="panel-filters" id="pattern-filters">
-      <button class="filter-btn active" data-sort="confidence">Confidence</button>
-      <button class="filter-btn" data-sort="evidence">Evidence</button>
-      <button class="filter-btn" data-sort="recent">Recent</button>
-    </div>
-    <div class="panel-scroll" id="pattern-scroll"></div>
+    <div id="clients-cards" class="card-grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));"></div>
   </div>
 
-  <div class="panel" id="panel-episodes">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#129504;</span> Recent Episodes</div>
-      <div class="panel-count" id="episode-count"></div>
+  <!-- Client Detail -->
+  <div id="page-client-detail" class="page">
+    <div class="back-link" onclick="showPage('clients')">&larr; All Clients</div>
+    <div class="page-header">
+      <div class="page-title" id="cd-title"></div>
+      <div class="page-subtitle" id="cd-subtitle"></div>
     </div>
-    <div class="panel-filters" id="episode-filters">
-      <button class="filter-btn active" data-domain="all">All</button>
-      <button class="filter-btn" data-domain="campaign">Campaign</button>
-      <button class="filter-btn" data-domain="revenue">Revenue</button>
-      <button class="filter-btn" data-domain="health">Health</button>
-      <button class="filter-btn" data-domain="content">Content</button>
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('cd-streams',this)">Data Streams</div>
+      <div class="tab" onclick="showTab('cd-episodes',this)">Observations</div>
+      <div class="tab" onclick="showTab('cd-patterns',this)">Patterns</div>
     </div>
-    <div class="panel-scroll" id="episode-scroll"></div>
+    <div id="cd-streams" class="tab-panel active"></div>
+    <div id="cd-episodes" class="tab-panel"></div>
+    <div id="cd-patterns" class="tab-panel"></div>
   </div>
 
-  <div class="panel" id="panel-skills">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#128200;</span> Skills &amp; Domains</div>
-      <div class="panel-count" id="skill-count"></div>
+  <!-- Patterns -->
+  <div id="page-patterns" class="page">
+    <div class="page-header">
+      <div class="page-title">Learned Patterns</div>
+      <div class="page-subtitle">Statistical patterns discovered from repeated observations across clients and platforms</div>
     </div>
-    <div class="panel-scroll" id="skill-scroll"></div>
+    <div class="filter-bar">
+      <label>Domain:</label>
+      <select id="pat-domain-filter" onchange="loadPatterns()"><option value="">All</option></select>
+      <label>Min Confidence:</label>
+      <input type="range" id="pat-conf-filter" min="0" max="100" value="0" oninput="document.getElementById('pat-conf-val').textContent=this.value+'%'; loadPatterns()">
+      <span id="pat-conf-val" class="small muted">0%</span>
+    </div>
+    <table>
+      <thead><tr><th>Skill</th><th>Domain</th><th>Confidence</th><th>Evidence</th><th>Insight</th><th>Updated</th></tr></thead>
+      <tbody id="patterns-table"></tbody>
+    </table>
   </div>
 
-  <div class="panel" id="panel-streams">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#128225;</span> Data Streams</div>
-      <div class="panel-count" id="stream-count"></div>
+  <!-- Reference Knowledge -->
+  <div id="page-reference" class="page">
+    <div class="page-header">
+      <div class="page-title">Reference Knowledge</div>
+      <div class="page-subtitle">Expert frameworks, DTC playbooks, and benchmarks that enrich pattern matching</div>
     </div>
-    <div class="panel-scroll" id="stream-scroll"></div>
+    <div class="filter-bar">
+      <input type="text" id="ref-search" placeholder="Search by title or tag..." oninput="loadReference()" style="width:240px;">
+    </div>
+    <table>
+      <thead><tr><th>Title</th><th>Source</th><th>Category</th><th>Expert</th><th>Tags</th><th>Weight</th></tr></thead>
+      <tbody id="reference-table"></tbody>
+    </table>
   </div>
 
-  <div class="panel" id="panel-guidance">
-    <div class="panel-header">
-      <div class="panel-title"><span class="panel-icon">&#129517;</span> Guidance Cache</div>
-      <div class="panel-count" id="guidance-count"></div>
+  <!-- Repo Connections -->
+  <div id="page-connections" class="page">
+    <div class="page-header">
+      <div class="page-title">Connections</div>
+      <div class="page-subtitle">Repositories, services, and integrations that feed or consume BrightMatter intelligence</div>
     </div>
-    <div class="panel-scroll" id="guidance-scroll"></div>
+    <div class="section">
+      <div class="section-title">Repositories</div>
+      <div id="connections-list"></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Service Integrations</div>
+      <div id="integrations-list"></div>
+    </div>
   </div>
+
+  <!-- Repo Detail -->
+  <div id="page-repo-detail" class="page">
+    <div class="back-link" onclick="showPage('connections')">&larr; All Repos</div>
+    <div class="page-header">
+      <div class="page-title" id="repo-title"></div>
+      <div class="page-subtitle" id="repo-subtitle"></div>
+    </div>
+    <div id="repo-detail-content"></div>
+  </div>
+
+  <!-- Activity Log -->
+  <div id="page-activity" class="page">
+    <div class="page-header">
+      <div class="page-title">Activity Log</div>
+      <div class="page-subtitle">Chronological feed of observations, pattern updates, and system events</div>
+    </div>
+    <div id="activity-feed"><div class="loading">Loading...</div></div>
+  </div>
+
 </div>
 
 <script>
-const API = window.location.origin;
-const ICONS = {
-  bolt:'\u26A1', brain:'\uD83E\uDDE0', sparkle:'\u2728', signal:'\uD83D\uDCE1',
-  sync:'\uD83D\uDD04', robot:'\uD83E\uDD16', compass:'\uD83E\uDDED',
-  mic:'\uD83C\uDF99\uFE0F', link:'\uD83D\uDD17', chart:'\uD83D\uDCC8'
+const BASE = '';
+let overviewData = null;
+let clientsData = [];
+
+const PLATFORM_ICONS = {
+  googleads:'https://www.gstatic.com/images/branding/product/1x/ads_48dp.png',
+  google:'https://www.gstatic.com/images/branding/product/1x/ads_48dp.png',
+  metaads:'https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Facebook_Logo_%282019%29.png/120px-Facebook_Logo_%282019%29.png',
+  meta:'https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Facebook_Logo_%282019%29.png/120px-Facebook_Logo_%282019%29.png',
+  shopify:'https://cdn.shopify.com/shopifycloud/brochure/assets/brand-assets/shopify-logo-png-small-2e1ca4e48a.png',
+  hubspot:'https://www.hubspot.com/hubfs/HubSpot_Logos/HubSpot-Inversed-Favicon.png',
+  klaviyo:'https://www.klaviyo.com/wp-content/uploads/2024/02/Klaviyo_Primary_Logo_Charcoal_Large.png',
+  braze:'https://www.braze.com/favicon.ico',
+  amplitude:'https://amplitude.com/favicon.ico',
+  triplewhale:'https://www.triplewhale.com/favicon.ico',
 };
-const EST = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true};
-const EST_FULL = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,month:'short',day:'numeric'};
 
-function toTime(iso) { return iso ? new Date(iso).toLocaleTimeString('en-US',EST) : ''; }
-function toFull(iso) { return iso ? new Date(iso).toLocaleString('en-US',EST_FULL) : ''; }
-function ago(iso) {
-  if(!iso)return '';
-  const s=(Date.now()-new Date(iso).getTime())/1000;
-  if(s<60)return 'now';if(s<3600)return Math.floor(s/60)+'m';
-  if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';
-}
-function confColor(c) { return c>.7?'var(--green)':c>.4?'var(--amber)':'var(--red)'; }
-function str(v) { return typeof v==='string'?v:Array.isArray(v)?v.join(', '):v&&typeof v==='object'?Object.values(v).filter(x=>typeof x==='string'||typeof x==='number').join(', '):String(v||''); }
-
-let feedFilter='all', patternSort='confidence', episodeDomain='all';
-let prevFeedIds=new Set(), prevPatternIds=new Set();
-
-document.getElementById('feed-filters').addEventListener('click',e=>{
-  if(!e.target.classList.contains('filter-btn'))return;
-  document.querySelectorAll('#feed-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active'); feedFilter=e.target.dataset.filter; renderFeedPanel(lastFeed);
-});
-document.getElementById('pattern-filters').addEventListener('click',e=>{
-  if(!e.target.classList.contains('filter-btn'))return;
-  document.querySelectorAll('#pattern-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active'); patternSort=e.target.dataset.sort; renderPatterns(lastData);
-});
-document.getElementById('episode-filters').addEventListener('click',e=>{
-  if(!e.target.classList.contains('filter-btn'))return;
-  document.querySelectorAll('#episode-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active'); episodeDomain=e.target.dataset.domain; renderEpisodes(lastData);
-});
-
-// ── Stats ──
-function renderStats(d) {
-  const uniquePatterns = deduplicatePatterns(d.patterns).length;
-  const totalSkills = Object.keys(d.skill_dist).length;
-  const items = [
-    {v:d.episode_total||d.episodes.length, l:'Episodes'},
-    {v:uniquePatterns, l:'Patterns'},
-    {v:totalSkills, l:'Skills'},
-    {v:(d.avg_confidence*100).toFixed(0)+'%', l:'Avg Conf.'},
-    {v:d.signal_count, l:'Signals'},
-    {v:d.event_count, l:'Events'}
-  ];
-  const el=document.getElementById('stats-bar');
-  if(!el.children.length){
-    items.forEach(s=>{
-      const x=document.createElement('div'); x.className='stat';
-      x.innerHTML=`<div class="stat-val" data-stat="${s.l}">${s.v}</div><div class="stat-label">${s.l}</div>`;
-      el.appendChild(x);
-    });
-  } else {
-    items.forEach(s=>{
-      const v=el.querySelector(`[data-stat="${s.l}"]`);
-      if(v&&v.textContent!==String(s.v)){v.textContent=s.v;v.classList.add('flash');setTimeout(()=>v.classList.remove('flash'),700);}
-    });
-  }
+function platformImg(name, size) {
+  size = size || 14;
+  const key = (name||'').toLowerCase().replace(/[\s_-]/g,'');
+  const src = PLATFORM_ICONS[key];
+  if (!src) return '';
+  return `<img src="${src}" style="width:${size}px;height:${size}px;border-radius:2px;object-fit:contain;vertical-align:middle;" onerror="this.style.display='none'">`;
 }
 
-// ── Feed Panel ──
-let lastFeed=[];
-function renderFeedPanel(feed) {
-  lastFeed=feed;
-  const filtered=feedFilter==='all'?feed:feed.filter(f=>f.type===feedFilter);
-  document.getElementById('feed-count').textContent=filtered.length;
-  const el=document.getElementById('feed-scroll');
-  const newIds=new Set(filtered.map(f=>f.ts+f.text));
-  let html='';
-  filtered.forEach(f=>{
-    const isNew=!prevFeedIds.has(f.ts+f.text);
-    const badgeClass='badge-'+f.type;
-    html+=`<div class="row${isNew?' flash-row':''}">
-      <div class="row-time">${toTime(f.ts)}<br>${ago(f.ts)}</div>
-      <div class="row-icon">${ICONS[f.icon]||'\u25CF'}</div>
-      <div class="row-body">
-        <div class="row-text">${f.text}</div>
-        ${f.detail?`<div class="row-detail">${f.detail}</div>`:''}
-      </div>
-      <div class="badge ${badgeClass}">${f.type}</div>
-    </div>`;
+// Nav
+document.querySelectorAll('.nav-item[data-page]').forEach(el => {
+  el.addEventListener('click', () => showPage(el.dataset.page));
+});
+document.getElementById('client-toggle-btn').addEventListener('click', toggleClients);
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const page = document.getElementById('page-' + id);
+  if (page) page.classList.add('active');
+  document.querySelectorAll('.nav-item[data-page]').forEach(n => {
+    if (n.dataset.page === id) n.classList.add('active');
   });
-  el.innerHTML=html||'<div class="empty-state">No activity yet</div>';
-  prevFeedIds=newIds;
+  const loaders = {
+    overview: loadOverview, clients: loadClients, patterns: loadPatterns,
+    reference: loadReference, connections: loadConnections, activity: loadActivity,
+  };
+  if (loaders[id]) loaders[id]();
 }
 
-// ── Patterns Panel ──
-let lastData=null;
+function showTab(id, el) {
+  el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  el.closest('.page').querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+let clientsOpen = false;
+function toggleClients() {
+  clientsOpen = !clientsOpen;
+  document.getElementById('client-tree').classList.toggle('open', clientsOpen);
+  document.getElementById('client-arrow').innerHTML = clientsOpen ? '&#9662;' : '&#9656;';
+}
+
+function N(n) { return n == null ? '--' : Number(n).toLocaleString(); }
+function Pct(n) { return n == null ? '--' : (n * 100).toFixed(0) + '%'; }
+function D(s) { if (!s) return '--'; const d = new Date(s); return isNaN(d) ? s.slice(0,10) : d.toLocaleDateString('en-US', {month:'short', day:'numeric'}); }
+function T(s) { if (!s) return '--'; const d = new Date(s); return isNaN(d) ? s.slice(0,19) : d.toLocaleString('en-US', {month:'short', day:'numeric', timeZone:'America/New_York'}); }
+
+function normalizeClientName(raw) {
+  const CANONICAL = {
+    'female founder collective':'Female Founder Collective',
+    'female-founder-collective':'Female Founder Collective',
+    'mr christmas e17e4ccb':'Mr. Christmas',
+    'mr. christmas':'Mr. Christmas',
+    'mr christmas':'Mr. Christmas',
+    'soko glam':'Soko Glam',
+    'sokoglam':'Soko Glam',
+    'shepherd boy farms':'Shepherd Boy Farms',
+    'shepherd-boy-farms':'Shepherd Boy Farms',
+  };
+  return CANONICAL[raw.toLowerCase().trim()] || raw;
+}
+function confClass(c) { return c >= 0.7 ? 'high' : c >= 0.4 ? 'med' : 'low'; }
+
+function statusBadge(ts) {
+  if (!ts) return '<span class="badge badge-red">Not Connected</span>';
+  const h = (Date.now() - new Date(ts).getTime()) / 3600000;
+  if (h < 48) return '<span class="badge badge-green">Active</span>';
+  if (h < 168) return '<span class="badge badge-amber">Stale</span>';
+  return '<span class="badge badge-red">Inactive</span>';
+}
 
 function describePattern(p) {
-  const cond=p.condition||{};
-  const rec=p.recommendation||{};
-  const skill=p.skill_name||'unknown';
-
-  const condParts=[];
-  if(cond.channel) condParts.push(str(cond.channel).replace(/[._]/g,' '));
-  if(cond.platform) condParts.push(str(cond.platform));
-  if(cond.strategy) condParts.push(str(cond.strategy));
-  if(cond.funnel_stage) condParts.push(str(cond.funnel_stage)+' funnel');
-  if(cond.client_id) condParts.push(str(cond.client_id));
-  if(cond.industry) condParts.push(str(cond.industry));
-  if(cond.quarter) condParts.push(str(cond.quarter));
-
-  const recParts=[];
-  if(rec.action) recParts.push(str(rec.action));
-  if(rec.summary) recParts.push(str(rec.summary));
-  if(rec.expected_cpa) recParts.push('CPA $'+Number(rec.expected_cpa).toFixed(0));
-  if(rec.expected_roas) recParts.push('ROAS '+Number(rec.expected_roas).toFixed(1)+'x');
-  if(rec.expected_ctr) recParts.push('CTR '+(Number(rec.expected_ctr)*100).toFixed(1)+'%');
-  if(rec.target_spend) recParts.push('$'+Number(rec.target_spend).toLocaleString()+' spend');
-
-  const ev=p.expected_value;
-  const evLabel=ev&&ev!==1?(ev>1?'+'+((ev-1)*100).toFixed(0)+'% lift':((ev-1)*100).toFixed(0)+'% change'):'';
-
-  let title='';
-  if(condParts.length){
-    title=condParts.join(' \u00B7 ');
-  } else {
-    title=skill.replace(/[-_]/g,' ').replace(/:.*$/,'');
+  const cond = p.condition || {};
+  const rec = p.recommendation || {};
+  let text = rec.summary || rec.action || '';
+  if (!text && typeof rec === 'string') text = rec;
+  if (!text) {
+    const parts = [];
+    if (cond.channel) parts.push(String(cond.channel));
+    if (cond.platform) parts.push(String(cond.platform));
+    if (cond.strategy) parts.push(String(cond.strategy));
+    text = parts.length > 0 ? parts.join(' / ') + ' pattern' : 'Learned pattern';
   }
-
-  let subtitle='';
-  if(recParts.length) subtitle=recParts.join(' \u00B7 ');
-  else if(evLabel) subtitle=evLabel;
-
-  if(!subtitle){
-    const extra=Object.keys(cond).filter(k=>!['channel','platform','strategy','funnel_stage','client_id','industry','quarter'].includes(k));
-    subtitle=extra.slice(0,3).map(k=>`${k}: ${String(cond[k]).substring(0,25)}`).join(', ');
-  }
-
-  return {title, subtitle, domain:p.domain||'generic'};
+  return text.length > 100 ? text.slice(0, 97) + '...' : text;
 }
 
-function deduplicatePatterns(patterns) {
-  const seen=new Map();
-  patterns.forEach(p=>{
-    const desc=describePattern(p);
-    const key=(p.skill_name||'')+'|'+(p.domain||'')+'|'+desc.title;
-    const existing=seen.get(key);
-    if(!existing||(p.confidence||0)>(existing.confidence||0)) seen.set(key,p);
-  });
-  return Array.from(seen.values());
+function fmtMetric(k, v) {
+  if (typeof v !== 'number') return String(v);
+  const money = ['spend','revenue','cost','cpc','cpa','conversion_value','aov'];
+  const pct = ['ctr','cvr','roas','open_rate','click_rate'];
+  if (money.some(m => k.toLowerCase().includes(m))) return '$' + v.toLocaleString(undefined, {maximumFractionDigits:2});
+  if (pct.some(m => k.toLowerCase().includes(m))) return (v * (v < 1 ? 100 : 1)).toFixed(2) + '%';
+  return v.toLocaleString();
 }
 
-function renderPatterns(d) {
-  if(!d)return;
-  let patterns=deduplicatePatterns(d.patterns);
-
-  if(patternSort==='confidence') patterns.sort((a,b)=>(b.confidence||0)-(a.confidence||0));
-  else if(patternSort==='evidence') patterns.sort((a,b)=>(b.evidence_count||0)-(a.evidence_count||0));
-  else patterns.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
-
-  document.getElementById('pattern-count').textContent=patterns.length;
-  const el=document.getElementById('pattern-scroll');
-  const newIds=new Set(patterns.map(p=>p.pattern_id));
-  let html='';
-  patterns.forEach(p=>{
-    const c=p.confidence||0;
-    const ev=p.evidence_count||0;
-    const isNew=!prevPatternIds.has(p.pattern_id);
-    const wins=p.successes||0, losses=p.failures||0;
-    const wr=(wins+losses)>0?((wins/(wins+losses))*100).toFixed(0)+'%':'\u2014';
-    const desc=describePattern(p);
-    const updated=p.updated_at?ago(p.updated_at)+' ago':'';
-
-    html+=`<div class="row${isNew?' flash-row':''}" style="flex-wrap:wrap">
-      <div class="row-body" style="flex:1;min-width:0">
-        <div class="row-text" style="font-weight:500">${desc.title}</div>
-        ${desc.subtitle?`<div class="row-detail" style="color:var(--text-secondary);margin-top:1px">${desc.subtitle}</div>`:''}
-        <div class="row-detail">${ev} evidence \u00B7 ${wins}W/${losses}L (${wr})${updated?' \u00B7 '+updated:''}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-        <div class="badge badge-${desc.domain}">${desc.domain}</div>
-        <div class="conf-bar">
-          <div class="conf-track"><div class="conf-fill" style="width:${(c*100).toFixed(0)}%;background:${confColor(c)}"></div></div>
-          <div class="conf-val" style="color:${confColor(c)}">${(c*100).toFixed(0)}%</div>
-        </div>
-      </div>
-    </div>`;
-  });
-  el.innerHTML=html||'<div class="empty-state">No patterns formed yet</div>';
-  prevPatternIds=newIds;
-}
-
-// ── Episodes Panel ──
-function describeEpisode(ep) {
-  const skill=ep.skill_name||'unknown';
-  const pred=ep.prediction||{};
-  const outcome=ep.outcome||{};
-  const ctx=pred.context||{};
-  const meta=outcome.metadata||{};
-  const channel=ctx.channel||'';
-  const source=ctx.source||meta._episode_source||'';
-
-  let title=skill.replace(/[-_]/g,' ').replace(/:.*$/,'');
-  let detail='';
-
-  if(source==='bigquery-delta'||source==='bigquery'){
-    const ch=channel?String(channel).replace(/[._]/g,' '):'';
-    title=ch?ch+' data':title;
-    const parts=[];
-    if(meta.spend!=null) parts.push('$'+Number(meta.spend).toLocaleString()+' spend');
-    if(meta.cpa!=null&&meta.cpa>0) parts.push('$'+Number(meta.cpa).toFixed(0)+' CPA');
-    if(meta.roas!=null&&meta.roas>0) parts.push(Number(meta.roas).toFixed(1)+'x ROAS');
-    detail=parts.join(' \u00B7 ');
-  } else if(source==='call_transcript'){
-    title=meta.summary||skill.replace(/[-_]/g,' ');
-    if(meta.quotes&&meta.quotes[0]) detail='\u201C'+String(meta.quotes[0]).substring(0,80)+'\u201D';
-  } else if(skill.includes('cross-metric-correlation')){
-    title='Correlation: '+(meta.correlation_type||'multi-metric');
-    detail=channel?String(channel).replace(/[._]/g,' '):'';
-  } else if(ctx.summary){
-    title=ctx.summary;
-  } else if(meta.summary){
-    title=meta.summary;
-  }
-
-  if(title.length>90) title=title.substring(0,87)+'...';
-  return {title,detail};
-}
-
-function renderEpisodes(d) {
-  if(!d)return;
-  let episodes=[...d.episodes];
-  if(episodeDomain!=='all') episodes=episodes.filter(e=>(e.domain||'generic')===episodeDomain);
-
-  document.getElementById('episode-count').textContent=episodes.length;
-  const el=document.getElementById('episode-scroll');
-  let html='';
-  episodes.slice(0,100).forEach(ep=>{
-    const domain=ep.domain||'generic';
-    const pe=ep.prediction_error||0;
-    const w=(ep.weight||0).toFixed(2);
-    const desc=describeEpisode(ep);
-    const peLabel=pe>0.05?' \u00B7 '+( pe*100).toFixed(0)+'% error':'';
-    html+=`<div class="row">
-      <div class="row-time">${toTime(ep.created_at)}<br>${ago(ep.created_at)}</div>
-      <div class="row-body">
-        <div class="row-text">${desc.title}</div>
-        <div class="row-detail">${desc.detail?desc.detail+' \u00B7 ':''}w:${w}${peLabel}</div>
-      </div>
-      <div class="badge badge-${domain}">${domain}</div>
-    </div>`;
-  });
-  el.innerHTML=html||'<div class="empty-state">No episodes yet</div>';
-}
-
-// ── Skills Panel ──
-function renderSkills(d) {
-  if(!d)return;
-  const skills=Object.entries(d.skill_dist).sort((a,b)=>b[1]-a[1]);
-  const domains=Object.entries(d.domain_dist).sort((a,b)=>b[1]-a[1]);
-  const mx=skills.length?skills[0][1]:1;
-
-  document.getElementById('skill-count').textContent=skills.length+' skills';
-  const el=document.getElementById('skill-scroll');
-
-  let html='<div style="padding:12px 16px 8px"><div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">Domains</div>';
-  domains.forEach(([dom,n])=>{
-    const c={campaign:'var(--red)',revenue:'var(--teal)',content:'var(--amber)',health:'var(--green)',generic:'var(--text-dim)'}[dom]||'var(--text-dim)';
-    html+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
-      <div style="width:8px;height:8px;border-radius:50%;background:${c}"></div>
-      <div style="flex:1;font-size:12px;font-weight:500;text-transform:capitalize">${dom}</div>
-      <div style="font-size:13px;font-weight:600;font-family:'IBM Plex Mono',monospace">${n}</div>
-    </div>`;
-  });
-
-  html+='</div><div style="padding:12px 16px 8px"><div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">Episode Distribution</div>';
-  skills.forEach(([s,n])=>{
-    const pct=(n/mx*100).toFixed(0);
-    const label=s.replace(/[-_]/g,' ').replace(/:.*$/,'');
-    html+=`<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
-      <div style="width:110px;font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${s}">${label}</div>
-      <div style="flex:1;height:5px;background:var(--bg);border-radius:3px;overflow:hidden">
-        <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:3px;transition:width .4s"></div>
-      </div>
-      <div style="width:30px;text-align:right;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--text-dim)">${n}</div>
-    </div>`;
-  });
-  html+='</div>';
-  el.innerHTML=html;
-}
-
-// ── Streams Panel ──
-function renderStreams(d) {
-  if(!d)return;
-  const wm=d.watermarks||[];
-  document.getElementById('stream-count').textContent=wm.length+' sources';
-  const el=document.getElementById('stream-scroll');
-  let html='';
-  wm.forEach(w=>{
-    const ts=w.last_processed_at;
-    const secAgo=ts?(Date.now()-new Date(ts).getTime())/1000:Infinity;
-    const status=secAgo<3600?'active':secAgo<86400?'stale':'dead';
-    const statusLabel=status==='active'?'Active':status==='stale'?'Stale':'Inactive';
-    html+=`<div class="stream-status">
-      <div class="stream-dot ${status}"></div>
-      <div class="stream-info">
-        <div class="stream-name">${(w.source||'').toUpperCase()}</div>
-        <div class="stream-ts">${ts?toFull(ts)+' ET':'Never synced'} \u00B7 ${statusLabel}</div>
-      </div>
-      <div class="badge badge-${status==='active'?'health':status==='stale'?'content':'campaign'}">${ago(ts)||'\u2014'}</div>
-    </div>`;
-  });
-  el.innerHTML=html||'<div class="empty-state">No data streams configured</div>';
-}
-
-// ── Guidance Panel ──
-function renderGuidance(d) {
-  if(!d)return;
-  const guidance=d.guidance||[];
-  document.getElementById('guidance-count').textContent=guidance.length;
-  const el=document.getElementById('guidance-scroll');
-  let html='';
-  guidance.forEach(g=>{
-    const c=g.confidence||0;
-    const label=(g.skill_name||'unknown').replace(/[-_]/g,' ');
-    html+=`<div class="row">
-      <div class="row-body">
-        <div class="row-text">${label}</div>
-        <div class="row-detail">${g.client_id||'all clients'} \u00B7 ${g.domain||'generic'}</div>
-      </div>
-      <div class="conf-bar">
-        <div class="conf-track"><div class="conf-fill" style="width:${(c*100).toFixed(0)}%;background:${confColor(c)}"></div></div>
-        <div class="conf-val" style="color:${confColor(c)}">${(c*100).toFixed(0)}%</div>
-      </div>
-    </div>`;
-  });
-  el.innerHTML=html||'<div class="empty-state">No guidance cached</div>';
-}
-
-// ── Main loop ──
-let firstLoad=true;
-async function refresh() {
+// Dashboard
+async function loadOverview() {
   try {
-    const [dataRes,feedRes]=await Promise.all([
-      fetch(API+'/api/v1/dashboard/data'),
-      fetch(API+'/api/v1/dashboard/feed?limit=80')
+    const [ov, feed] = await Promise.all([
+      fetch(BASE+'/api/v1/kc/overview').then(r=>r.json()),
+      fetch(BASE+'/api/v1/dashboard/feed?limit=8').then(r=>r.json()),
     ]);
-    const data=await dataRes.json();
-    const feed=await feedRes.json();
-    lastData=data;
-    renderStats(data);
-    renderFeedPanel(feed);
-    renderPatterns(data);
-    renderEpisodes(data);
-    renderSkills(data);
-    renderStreams(data);
-    renderGuidance(data);
-    if(firstLoad){document.getElementById('loading').classList.add('done');firstLoad=false;}
-    document.getElementById('last-update').textContent=new Date().toLocaleString('en-US',EST_FULL)+' ET';
-  } catch(err){ console.error('Refresh failed:',err); }
+    overviewData = ov;
+    const hi = ov.confidence_tiers?.high || 0;
+    const med = ov.confidence_tiers?.medium || 0;
+
+    document.getElementById('overview-stats').innerHTML = `
+      <div class="stat-card"><div class="indicator blue"></div>
+        <div class="label">Clients <span class="hint" title="Distinct clients with platform data in Supabase">?</span></div>
+        <div class="value">${N(ov.total_clients)}</div>
+        <div class="detail">${N(ov.total_streams)} data streams connected</div></div>
+      <div class="stat-card"><div class="indicator purple"></div>
+        <div class="label">Observations <span class="hint" title="Raw data points ingested from platforms, APIs, and trigger tasks. Each is a prediction/outcome pair.">?</span></div>
+        <div class="value">${N(ov.total_episodes)}</div>
+        <div class="detail">Across ${Object.keys(ov.domain_distribution||{}).length} domains</div></div>
+      <div class="stat-card"><div class="indicator green"></div>
+        <div class="label">Learned Patterns <span class="hint" title="Statistical regularities discovered by consolidating observations. Updated via Bayesian confidence.">?</span></div>
+        <div class="value">${N(ov.total_patterns)}</div>
+        <div class="detail">${hi} high confidence, ${med} medium</div></div>
+      <div class="stat-card"><div class="indicator amber"></div>
+        <div class="label">Avg Confidence <span class="hint" title="Mean Bayesian confidence across all patterns. Higher = more evidence supporting each pattern.">?</span></div>
+        <div class="value">${Pct(ov.avg_confidence)}</div>
+        <div class="detail">${N(ov.total_reference)} reference items</div></div>
+    `;
+    document.getElementById('nav-pat-count').textContent = N(ov.total_patterns);
+    document.getElementById('nav-ref-count').textContent = N(ov.total_reference);
+
+    // Data sources from watermarks — grouped into system + client platforms
+    const wm = ov.watermarks || {};
+    const SYS_ICONS = {signals:'&#9889;',transcript_ingest:'&#9998;',bigquery:'&#9638;','airtable publish':'&#9783;','firebase clientdata':'&#9854;'};
+
+    const system = [];
+    const byClient = {};
+    for (const [k, v] of Object.entries(wm)) {
+      const raw = k.replace(/^platform-/, '');
+      const age = v ? (Date.now() - new Date(v).getTime()) / 3600000 : 999;
+      const badge = age < 2 ? 'badge-green' : age < 48 ? 'badge-amber' : 'badge-red';
+      const label = age < 2 ? 'Live' : age < 48 ? 'Recent' : 'Stale';
+      const entry = {raw, ts:v, age, badge, label};
+
+      const platMatch = raw.match(/^(GoogleAds|MetaAds|Shopify|HubSpot|Klaviyo)[- ](.+)$/i);
+      if (platMatch) {
+        const plat = platMatch[1];
+        const client = normalizeClientName(platMatch[2]);
+        if (!byClient[client]) byClient[client] = {platforms: {}, age: 999};
+        const existing = byClient[client].platforms[plat];
+        if (!existing || entry.age < existing.age) {
+          byClient[client].platforms[plat] = entry;
+        }
+        byClient[client].age = Math.min(byClient[client].age, entry.age);
+      } else {
+        system.push(entry);
+      }
+    }
+
+    let dsHtml = '';
+    // System sources row
+    if (system.length) {
+      dsHtml += '<div style="margin-bottom:12px;">';
+      dsHtml += '<div class="small muted" style="margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;">System</div>';
+      dsHtml += '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+      for (const s of system) {
+        const icon = SYS_ICONS[s.raw.toLowerCase()] || '&#8226;';
+        dsHtml += `<div style="display:flex;align-items:center;gap:6px;background:var(--card-bg);border:1px solid var(--border-light);border-radius:var(--radius);padding:6px 10px;font-size:12px;">
+          <span style="font-size:13px;">${icon}</span>
+          <span>${s.raw.replace(/_/g,' ')}</span>
+          <span class="badge ${s.badge}" style="margin-left:2px;">${s.label}</span>
+        </div>`;
+      }
+      dsHtml += '</div></div>';
+    }
+
+    // Client platform cards (merged duplicates)
+    const clientNames = Object.keys(byClient).sort();
+    if (clientNames.length) {
+      dsHtml += '<div class="small muted" style="margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;">Client Platforms</div>';
+      dsHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;">';
+      for (const client of clientNames) {
+        const group = byClient[client];
+        const entries = Object.entries(group.platforms);
+        const worst = Math.min(...entries.map(([,e])=>e.age));
+        const cardBorder = worst < 2 ? 'var(--green)' : worst < 48 ? 'var(--amber)' : 'var(--red)';
+        const platChips = entries.map(([plat, e]) => {
+          return `<div style="display:flex;align-items:center;gap:4px;font-size:11px;">
+            ${platformImg(plat)}<span>${plat}</span><span class="badge ${e.badge}" style="font-size:10px;padding:1px 5px;">${e.label}</span>
+            <span class="muted" style="font-size:10px;margin-left:auto;">${T(e.ts)}</span>
+          </div>`;
+        }).join('');
+        dsHtml += `<div style="background:var(--card-bg);border:1px solid var(--border-light);border-left:3px solid ${cardBorder};border-radius:var(--radius);padding:10px 12px;">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;">${client}</div>
+          <div style="display:flex;flex-direction:column;gap:4px;">${platChips}</div>
+        </div>`;
+      }
+      dsHtml += '</div>';
+    }
+
+    document.getElementById('data-sources').innerHTML = dsHtml || '<div class="muted small">No data sources</div>';
+
+    const feedHtml = (feed || []).slice(0,8).map(f => `
+      <div class="feed-item">
+        <div class="ts">${T(f.ts)}</div>
+        <div class="body">${f.text || ''}<div class="detail">${f.detail || ''}</div></div>
+      </div>`).join('');
+    document.getElementById('overview-feed').innerHTML = feedHtml || '<div class="muted small">No recent activity</div>';
+
+    loadClientSidebar();
+  } catch (e) { console.error('Overview failed:', e); }
 }
-refresh();
-setInterval(refresh,10000);
+
+async function loadClientSidebar() {
+  try {
+    const data = await fetch(BASE+'/api/v1/kc/clients').then(r=>r.json());
+    clientsData = data;
+    document.getElementById('client-count').textContent = data.length;
+    document.getElementById('client-tree').innerHTML = data.map(c =>
+      `<div class="nav-item" onclick="showClientDetail('${c.client_id}')">${c.client_name}</div>`
+    ).join('');
+  } catch (e) { console.error('Sidebar failed:', e); }
+}
+
+async function loadClients() {
+  try {
+    const data = clientsData.length ? clientsData : await fetch(BASE+'/api/v1/kc/clients').then(r=>r.json());
+    clientsData = data;
+    document.getElementById('clients-cards').innerHTML = data.map(c => {
+      const platHtml = (c.platforms||[]).map(p => `<span style="display:inline-flex;align-items:center;gap:3px;">${platformImg(p, 14)}<span style="font-size:11px;color:var(--text-secondary);">${p}</span></span>`).join('<span style="color:var(--border);margin:0 2px;">·</span>');
+      const initials = (c.client_name||'?').split(/[\s-]+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+      const colors = ['#2563eb','#7c3aed','#059669','#d97706','#dc2626','#0891b2','#4f46e5','#be123c'];
+      const colorIdx = Math.abs([...c.client_id].reduce((a,c)=>a+c.charCodeAt(0),0)) % colors.length;
+      return `<div class="card" style="cursor:pointer;transition:border-color 0.1s,box-shadow 0.1s;" onclick="showClientDetail('${c.client_id}')" onmouseover="this.style.borderColor='var(--accent)';this.style.boxShadow='0 2px 8px rgba(37,99,235,0.08)'" onmouseout="this.style.borderColor='var(--border-light)';this.style.boxShadow='none'">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="width:36px;height:36px;border-radius:8px;background:${colors[colorIdx]};color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;">${initials}</div>
+          <div>
+            <div style="font-weight:600;font-size:14px;">${c.client_name}</div>
+            <div style="font-size:11px;color:var(--text-muted);">${c.client_id}</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">${platHtml}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;border-top:1px solid var(--border-light);padding-top:10px;">
+          <div><div class="small muted">Streams</div><div class="mono" style="font-weight:600;">${c.stream_count}</div></div>
+          <div><div class="small muted">Observations</div><div class="mono" style="font-weight:600;">${N(c.episode_count)}</div></div>
+          <div><div class="small muted">Patterns</div><div class="mono" style="font-weight:600;">${c.pattern_count}</div></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">Last activity: ${D(c.last_activity)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error('Clients failed:', e); }
+}
+
+async function showClientDetail(cid) {
+  showPage('client-detail');
+  const info = clientsData.find(c=>c.client_id===cid) || {};
+  document.getElementById('cd-title').textContent = info.client_name || cid;
+  document.getElementById('cd-subtitle').textContent = `${info.stream_count||0} streams · ${N(info.episode_count)} observations · ${info.pattern_count||0} patterns`;
+  document.getElementById('cd-streams').innerHTML = '<div class="loading">Loading...</div>';
+  document.getElementById('cd-episodes').innerHTML = '<div class="loading">Loading...</div>';
+  document.getElementById('cd-patterns').innerHTML = '<div class="loading">Loading...</div>';
+  document.querySelectorAll('#page-client-detail .tab').forEach((t,i)=>t.classList.toggle('active',i===0));
+  document.querySelectorAll('#page-client-detail .tab-panel').forEach((p,i)=>p.classList.toggle('active',i===0));
+
+  try {
+    const [streams, episodes, patterns] = await Promise.all([
+      fetch(BASE+'/api/v1/kc/clients/'+cid+'/streams').then(r=>r.json()),
+      fetch(BASE+'/api/v1/kc/clients/'+cid+'/episodes?limit=50').then(r=>r.json()),
+      fetch(BASE+'/api/v1/kc/clients/'+cid+'/patterns').then(r=>r.json()),
+    ]);
+
+    document.getElementById('cd-streams').innerHTML = !streams.length ? '<div class="muted">No streams</div>' :
+      '<div class="card-grid">' + streams.map(s => {
+        const m = s.latest_metrics || {};
+        const lines = Object.entries(m).slice(0,8).map(([k,v]) =>
+          `<div style="display:flex;justify-content:space-between;padding:2px 0;"><span class="muted small">${k}</span><span class="mono small">${fmtMetric(k,v)}</span></div>`
+        ).join('');
+        return `<div class="card">
+          <div class="card-header"><div class="card-title" style="display:flex;align-items:center;gap:6px;">${platformImg(s.platform, 18)}<span>${s.stream_id}</span></div><span class="badge badge-blue">${s.platform}</span></div>
+          <div class="small muted" style="margin-bottom:6px">${D(s.earliest_date)} — ${D(s.latest_date)} · ${N(s.row_count)} days</div>
+          ${lines}</div>`;
+      }).join('') + '</div>';
+
+    document.getElementById('cd-episodes').innerHTML = !episodes.length ? '<div class="muted">No observations</div>' :
+      `<table><thead><tr><th>Skill</th><th>Domain</th><th>Summary</th><th>Weight</th><th>Error</th><th>Date</th></tr></thead><tbody>` +
+      episodes.map(ep => {
+        const o = ep.outcome||{}, p = ep.prediction||{}, ctx = p.context||{}, meta = o.metadata||{};
+        let summary = meta.summary || ctx.channel || ep.skill_name;
+        if (summary.length > 60) summary = summary.slice(0,57)+'...';
+        return `<tr><td class="mono small">${ep.skill_name}</td><td><span class="badge badge-purple">${ep.domain||'generic'}</span></td><td class="small">${summary}</td><td class="mono">${ep.weight!=null?Number(ep.weight).toFixed(2):'--'}</td><td class="mono">${ep.prediction_error!=null?(Number(ep.prediction_error)*100).toFixed(1)+'%':'--'}</td><td class="small muted">${T(ep.created_at)}</td></tr>`;
+      }).join('') + '</tbody></table>';
+
+    const allP = [...(patterns.client_patterns||[]), ...(patterns.universal_patterns||[])];
+    document.getElementById('cd-patterns').innerHTML = !allP.length ? '<div class="muted">No patterns</div>' :
+      '<div class="card-grid">' + allP.map(p => {
+        const c = p.confidence||0;
+        const isC = (patterns.client_patterns||[]).some(cp=>cp.pattern_id===p.pattern_id);
+        return `<div class="card">
+          <div class="card-header"><div class="card-title mono small">${p.skill_name}</div>${isC?'<span class="badge badge-green">Client</span>':'<span class="badge badge-purple">Universal</span>'}</div>
+          <div style="margin:6px 0;font-size:12px">${describePattern(p)}</div>
+          <div class="conf-bar"><div class="conf-track"><div class="conf-fill ${confClass(c)}" style="width:${(c*100).toFixed(0)}%"></div></div><span class="small mono">${Pct(c)}</span><span class="small muted">${p.evidence_count||0} evidence · ${p.successes||0}W/${p.failures||0}L</span></div></div>`;
+      }).join('') + '</div>';
+  } catch (e) { console.error('Client detail failed:', e); }
+}
+
+async function loadPatterns() {
+  try {
+    const domain = document.getElementById('pat-domain-filter').value;
+    const minConf = parseInt(document.getElementById('pat-conf-filter').value)/100;
+    const params = new URLSearchParams();
+    if (domain) params.set('domain', domain);
+    if (minConf > 0) params.set('min_confidence', minConf.toString());
+    const data = await fetch(BASE+'/api/v1/kc/patterns?'+params).then(r=>r.json());
+
+    if (overviewData && document.getElementById('pat-domain-filter').options.length <= 1) {
+      Object.keys(overviewData.domain_distribution||{}).forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d; opt.textContent = d;
+        document.getElementById('pat-domain-filter').appendChild(opt);
+      });
+    }
+    document.getElementById('patterns-table').innerHTML = data.map(p => {
+      const c = p.confidence||0;
+      return `<tr><td class="mono small">${p.skill_name}</td><td><span class="badge badge-purple">${p.domain||'generic'}</span></td><td><div class="conf-bar"><div class="conf-track"><div class="conf-fill ${confClass(c)}" style="width:${(c*100).toFixed(0)}%"></div></div><span class="small mono">${Pct(c)}</span></div></td><td class="mono">${p.evidence_count||0}</td><td class="small truncate">${describePattern(p)}</td><td class="small muted">${D(p.updated_at)}</td></tr>`;
+    }).join('');
+  } catch (e) { console.error('Patterns failed:', e); }
+}
+
+async function loadReference() {
+  try {
+    const search = document.getElementById('ref-search').value;
+    const params = search ? '?search='+encodeURIComponent(search) : '';
+    const data = await fetch(BASE+'/api/v1/kc/reference'+params).then(r=>r.json());
+    document.getElementById('reference-table').innerHTML = data.map(r => {
+      const tags = (r.tags||[]).slice(0,4).map(t=>`<span class="badge badge-blue">${t}</span>`).join(' ');
+      return `<tr><td><strong>${r.title||'--'}</strong><div class="small muted">${(r.summary||'').slice(0,70)}</div></td><td class="small">${r.source||'--'}</td><td class="small">${r.category||'--'}</td><td class="small mono">${r.expert_handle||'--'}</td><td>${tags}</td><td class="mono">${r.confidence_weight!=null?Number(r.confidence_weight).toFixed(1):'--'}</td></tr>`;
+    }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center;padding:20px;">No reference knowledge loaded yet — run <code>python scripts/ingest_reference_knowledge.py --all</code></td></tr>';
+  } catch (e) { console.error('Reference failed:', e); }
+}
+
+async function loadConnections() {
+  try {
+    const data = await fetch(BASE+'/api/v1/kc/connections').then(r=>r.json());
+    const repos = {
+      'MH-OS': {
+        desc: 'Marketing operations trigger tasks that read BrightMatter patterns pre-execution and write outcomes post-execution.',
+        repo: 'Marketerhire/mh-os',
+        color: '#2563eb',
+        initial: 'M',
+        tasks: data.filter(c => ['channel-advisor','daily-pulse','revenue-health'].includes(c.task)),
+        integration: 'Trigger.dev · TypeScript',
+        client: 'src/trigger/shared/brightmatter.ts',
+      },
+      'DTC-OS': {
+        desc: 'D2C brand operating system — reference knowledge ingested, BrightMatter client installed for trigger task integration.',
+        repo: 'Marketerhire/DTC-OS',
+        color: '#7c3aed',
+        initial: 'D',
+        tasks: [],
+        integration: 'Reference knowledge + client stub',
+        client: 'shared/brightmatter.ts',
+      },
+    };
+
+    document.getElementById('connections-list').innerHTML = Object.entries(repos).map(([name, info]) => {
+      const taskChips = info.tasks.length ? info.tasks.map(t => {
+        const last = t.last_write || t.last_read;
+        return `<div class="task-chip">
+          <div class="task-name">${t.task}</div>
+          <div class="task-meta">${t.bm_skill} · ${statusBadge(last)}</div>
+        </div>`;
+      }).join('') : '<div class="small muted" style="padding:8px 0">Client installed — awaiting first trigger task integration</div>';
+
+      const anyActive = info.tasks.some(t => t.last_write || t.last_read);
+      return `<div class="repo-card" onclick="showRepoDetail('${name}')">
+        <div class="repo-header">
+          <div class="repo-name">
+            <div class="repo-logo" style="background:${info.color};">${info.initial}</div>
+            ${name}
+          </div>
+          ${anyActive ? statusBadge(info.tasks[0]?.last_write) : '<span class="badge badge-amber">Pending</span>'}
+        </div>
+        <div class="repo-meta">
+          <span class="repo-meta-item">&#128193; ${info.repo}</span>
+          <span class="repo-meta-item">&#9881; ${info.integration}</span>
+          <span class="repo-meta-item">&#128196; ${info.client}</span>
+        </div>
+        <div class="repo-desc">${info.desc}</div>
+        <div class="repo-tasks">${taskChips}</div>
+      </div>`;
+    }).join('');
+
+    const integrations = [
+      {name:'Slack', icon:'https://a.slack-edge.com/80588/marketing/img/icons/icon_slack_hash_colored.png', color:'#4A154B', desc:'Receives recommendations via channel posts, ingests conversation context from client Slack channels', status:'Active'},
+      {name:'Fireflies.ai', icon:'https://fireflies.ai/favicon.ico', color:'#6c3bef', desc:'Transcribes client calls and strategy sessions — extracted insights feed episodic memory', status:'Active'},
+      {name:'Notion', icon:'https://upload.wikimedia.org/wikipedia/commons/4/45/Notion_app_logo.png', color:'#000', desc:'Client knowledge bases and SOPs — referenced for context enrichment during analysis', status:'Connected'},
+      {name:'Google Calendar', icon:'https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png', color:'#4285f4', desc:'Schedules cron cadences and tracks meeting context for call transcript pairing', status:'Connected'},
+      {name:'Supabase', icon:'https://supabase.com/favicon/favicon-196x196.png', color:'#3ECF8E', desc:'Primary intelligence store — episodic memory, semantic patterns, client platform data, reference knowledge', status:'Active'},
+      {name:'Firebase', icon:'https://www.gstatic.com/devrel-devsite/prod/v0e0f589edd85502a40d78d7d0825db8ea5ef3b99ab4070381571c97814748f75/firebase/images/favicon.png', color:'#FFCA28', desc:'Client configuration source — reads datasources.json, client profiles, and platform credentials', status:'Active'},
+      {name:'BigQuery', icon:'https://www.gstatic.com/devrel-devsite/prod/v0e0f589edd85502a40d78d7d0825db8ea5ef3b99ab4070381571c97814748f75/cloud/images/favicons/onecloud/favicon.ico', color:'#4285f4', desc:'MarketerHire data warehouse — ingests cross-client ad performance, revenue metrics, and channel benchmarks', status:'Active'},
+      {name:'Airtable', icon:'https://airtable.com/favicon.ico', color:'#18BFFF', desc:'Publishes recommendations to MH-OS Airtable bases for operational visibility', status:'Active'},
+    ];
+    document.getElementById('integrations-list').innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;">' +
+      integrations.map(s => `
+        <div style="background:var(--card-bg);border:1px solid var(--border-light);border-radius:var(--radius);padding:12px 14px;display:flex;align-items:flex-start;gap:10px;">
+          <div style="width:32px;height:32px;border-radius:6px;background:${s.color};display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;">
+            <img src="${s.icon}" style="width:20px;height:20px;object-fit:contain;" onerror="this.parentElement.innerHTML='<span style=\\'color:#fff;font-size:14px;font-weight:700;\\'>${s.name[0]}</span>'">
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <span style="font-weight:600;font-size:13px;">${s.name}</span>
+              <span class="badge badge-green">${s.status}</span>
+            </div>
+            <div class="small muted" style="line-height:1.4;">${s.desc}</div>
+          </div>
+        </div>`).join('') + '</div>';
+  } catch (e) { console.error('Connections failed:', e); }
+}
+
+function showRepoDetail(name) {
+  showPage('repo-detail');
+  const isOS = name === 'MH-OS';
+  document.getElementById('repo-title').textContent = name;
+  document.getElementById('repo-subtitle').textContent = isOS
+    ? 'Trigger.dev tasks connected to BrightMatter via shared/brightmatter.ts'
+    : 'DTC operating system with BrightMatter client at shared/brightmatter.ts';
+
+  const content = isOS ? `
+    <div class="section">
+      <div class="section-title">Integration Pattern</div>
+      <div style="background:#f9f9f9;border:1px solid var(--border-light);border-radius:var(--radius);padding:16px;font-size:12px;line-height:1.8;">
+        <strong>Pre-execution:</strong> Each trigger task calls <code>getBrightMatterContext(skillName)</code> → fetches learned patterns + guidance → splices into Claude prompt alongside BigQuery data and Slack context<br>
+        <strong>Post-execution:</strong> After generating recommendations, calls <code>writeBrightMatterEpisode({...})</code> → writes the outcome back as an observation → feeds the learning loop<br>
+        <strong>Resilience:</strong> 3-second timeout, fire-and-forget writes, graceful empty-string return if BrightMatter is unavailable
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Connected Tasks</div>
+      <table><thead><tr><th>Task</th><th>BM Skill</th><th>Domain</th><th>Pattern</th></tr></thead><tbody>
+        <tr><td class="mono">channel-advisor</td><td class="mono small">channel-reallocation</td><td><span class="badge badge-blue">paid_media</span></td><td class="small">Budget reallocation recommendations across ad channels</td></tr>
+        <tr><td class="mono">daily-pulse</td><td class="mono small">daily-health-pulse</td><td><span class="badge badge-blue">operations</span></td><td class="small">Daily anomaly detection across all client metrics</td></tr>
+        <tr><td class="mono">revenue-health</td><td class="mono small">revenue-monitoring</td><td><span class="badge badge-blue">revenue</span></td><td class="small">Monthly revenue trend analysis with cohort tracking</td></tr>
+      </tbody></table>
+    </div>
+  ` : `
+    <div class="section">
+      <div class="section-title">Status</div>
+      <div style="background:#f9f9f9;border:1px solid var(--border-light);border-radius:var(--radius);padding:16px;font-size:12px;line-height:1.8;">
+        <strong>Client installed:</strong> <code>shared/brightmatter.ts</code> copied to DTC-OS with identical API contract<br>
+        <strong>Reference knowledge:</strong> DTC-OS semantic layer (glossary, entities, cohort methodology), driver tree, compounding loops, and growth analytics advisory are ingested into BrightMatter's reference_knowledge table<br>
+        <strong>Next:</strong> Wire into DTC-OS trigger tasks as they go live
+      </div>
+    </div>
+  `;
+  document.getElementById('repo-detail-content').innerHTML = content;
+}
+
+async function loadActivity() {
+  try {
+    const data = await fetch(BASE+'/api/v1/dashboard/feed?limit=60').then(r=>r.json());
+    document.getElementById('activity-feed').innerHTML = data.map(f => `
+      <div class="feed-item">
+        <div class="ts">${T(f.ts)}</div>
+        <div class="body">${f.text||''}<div class="detail">${f.detail||''}</div></div>
+      </div>`).join('') || '<div class="muted">No activity</div>';
+  } catch (e) { document.getElementById('activity-feed').innerHTML = '<div class="muted">Failed to load</div>'; }
+}
+
+loadOverview();
 </script>
 </body>
 </html>
