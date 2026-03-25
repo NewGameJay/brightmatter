@@ -3,177 +3,184 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BrightMatter — Command Center</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<title>BrightMatter — Intelligence Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0a0c10;
-  --surface: #12151c;
-  --surface-2: #181c26;
-  --border: rgba(255,255,255,.06);
-  --border-active: rgba(255,255,255,.12);
-  --text: #d4d0e0;
-  --text-secondary: #8a86a0;
-  --dim: #55516a;
-  --accent: #7B68EE;
-  --cyan: #34d399;
-  --coral: #f06868;
-  --gold: #f0b060;
-  --purple: #a78bfa;
-  --teal: #2dd4bf;
-  --orange: #fb923c;
-  --blue: #60a5fa;
-  --row-hover: rgba(123,104,238,.04);
-  --flash: rgba(52,211,153,.08);
+  --bg: #f7f7f8;
+  --white: #ffffff;
+  --border: #e2e4e9;
+  --border-light: #eef0f3;
+  --text: #1a1d24;
+  --text-secondary: #5c6370;
+  --text-dim: #9199a6;
+  --accent: #2563eb;
+  --accent-light: #eff4ff;
+  --green: #16a34a;
+  --green-bg: #f0fdf4;
+  --red: #dc2626;
+  --red-bg: #fef2f2;
+  --amber: #d97706;
+  --amber-bg: #fffbeb;
+  --purple: #7c3aed;
+  --purple-bg: #f5f3ff;
+  --teal: #0d9488;
+  --teal-bg: #f0fdfa;
+  --row-hover: #f4f6f9;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-html, body { height:100%; background:var(--bg); color:var(--text); font-family:'DM Sans',sans-serif; overflow:hidden; }
+html, body { height:100%; background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; }
 ::selection { background:var(--accent); color:#fff; }
-::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar { width:6px; }
 ::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:rgba(123,104,238,.18); border-radius:3px; }
+::-webkit-scrollbar-thumb { background:#d0d3da; border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:#b0b5bf; }
 
+/* Header */
 .header {
-  position:fixed; top:0; left:0; right:0; z-index:20; height:48px;
+  position:sticky; top:0; z-index:20; height:52px;
   display:flex; align-items:center; justify-content:space-between;
-  padding:0 20px; background:rgba(10,12,16,.95);
-  border-bottom:1px solid var(--border); backdrop-filter:blur(16px);
+  padding:0 24px; background:var(--white);
+  border-bottom:1px solid var(--border);
 }
 .logo { display:flex; align-items:center; gap:10px; }
-.logo-dot { width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 8px var(--cyan); animation:pulse 2.5s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.85)} }
-.logo-name { font-weight:700; font-size:13px; letter-spacing:2px; color:#fff; }
-.logo-tag { font-size:9px; color:var(--cyan); font-family:'JetBrains Mono',monospace; font-weight:500; letter-spacing:1px; border:1px solid rgba(52,211,153,.25); padding:1px 6px; border-radius:3px; }
+.logo-dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+.logo-name { font-weight:700; font-size:14px; letter-spacing:-.2px; }
+.logo-tag { font-size:10px; color:var(--green); font-family:'IBM Plex Mono',monospace; font-weight:500; background:var(--green-bg); padding:2px 8px; border-radius:10px; }
 
-.stats-bar { display:flex; gap:28px; }
-.stat { text-align:center; }
-.stat-val { font-weight:700; font-size:18px; font-family:'JetBrains Mono',monospace; transition:color .3s,text-shadow .3s; }
-.stat-val.flash { text-shadow:0 0 12px currentColor; }
-.stat-label { font-size:8px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-top:1px; }
+.stats-bar { display:flex; gap:24px; }
+.stat { text-align:center; min-width:60px; }
+.stat-val { font-weight:700; font-size:20px; font-family:'IBM Plex Mono',monospace; color:var(--text); transition:color .3s; }
+.stat-val.flash { color:var(--accent); }
+.stat-label { font-size:10px; color:var(--text-dim); font-weight:500; margin-top:1px; text-transform:uppercase; letter-spacing:.5px; }
 
-.meta-right { display:flex; align-items:center; gap:16px; }
-.refresh-badge { font-size:8px; color:var(--dim); font-family:'JetBrains Mono',monospace; text-align:right; line-height:1.6; }
-.refresh-badge .live { color:var(--cyan); font-weight:600; }
+.meta-right { display:flex; align-items:center; gap:12px; }
+.refresh-badge { font-size:10px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; text-align:right; line-height:1.5; }
+.refresh-badge .live { color:var(--green); font-weight:600; }
 
+/* Grid */
 .grid {
-  display:grid; position:fixed; top:48px; left:0; right:0; bottom:0;
+  display:grid; padding:16px; gap:16px;
   grid-template-columns:1fr 1fr 1fr;
   grid-template-rows:1fr 1fr;
-  gap:1px; background:var(--border);
+  height:calc(100vh - 52px);
 }
 .panel {
-  background:var(--surface); display:flex; flex-direction:column; overflow:hidden;
-  min-height:0;
+  background:var(--white); border:1px solid var(--border); border-radius:8px;
+  display:flex; flex-direction:column; overflow:hidden; min-height:0;
 }
 .panel-header {
-  padding:10px 14px 8px; display:flex; align-items:center; justify-content:space-between;
-  border-bottom:1px solid var(--border); flex-shrink:0;
+  padding:12px 16px 10px; display:flex; align-items:center; justify-content:space-between;
+  border-bottom:1px solid var(--border-light); flex-shrink:0;
 }
 .panel-title {
-  font-size:10px; font-weight:600; letter-spacing:1.8px; text-transform:uppercase; color:var(--text-secondary);
-  display:flex; align-items:center; gap:6px;
+  font-size:13px; font-weight:600; color:var(--text);
+  display:flex; align-items:center; gap:8px;
 }
-.panel-title .dot { width:5px; height:5px; border-radius:50%; }
-.panel-count { font-size:10px; font-family:'JetBrains Mono',monospace; color:var(--dim); }
+.panel-icon { font-size:14px; }
+.panel-count { font-size:11px; font-family:'IBM Plex Mono',monospace; color:var(--text-dim); background:var(--bg); padding:2px 8px; border-radius:10px; }
 .panel-filters {
-  display:flex; gap:4px; padding:6px 14px; border-bottom:1px solid var(--border); flex-shrink:0;
+  display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--border-light); flex-shrink:0; background:var(--bg);
 }
 .filter-btn {
-  font-size:9px; font-family:'JetBrains Mono',monospace; padding:2px 8px; border-radius:3px;
-  background:transparent; border:1px solid var(--border); color:var(--dim); cursor:pointer;
+  font-size:11px; font-weight:500; padding:4px 10px; border-radius:6px;
+  background:transparent; border:1px solid transparent; color:var(--text-secondary); cursor:pointer;
   transition:all .15s;
 }
-.filter-btn:hover { border-color:var(--border-active); color:var(--text-secondary); }
-.filter-btn.active { background:rgba(123,104,238,.12); border-color:var(--accent); color:var(--accent); }
+.filter-btn:hover { background:var(--white); border-color:var(--border); }
+.filter-btn.active { background:var(--white); border-color:var(--border); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.04); }
 .panel-scroll { flex:1; overflow-y:auto; min-height:0; }
 
 /* Table rows */
 .row {
-  display:flex; align-items:flex-start; padding:7px 14px; border-bottom:1px solid rgba(255,255,255,.02);
-  transition:background .12s; font-size:12px; gap:10px; min-height:36px;
+  display:flex; align-items:flex-start; padding:8px 16px; border-bottom:1px solid var(--border-light);
+  transition:background .1s; font-size:13px; gap:10px; min-height:40px;
 }
 .row:hover { background:var(--row-hover); }
-.row.flash-row { animation:flashIn .6s ease-out; }
-@keyframes flashIn { 0%{background:var(--flash)} 100%{background:transparent} }
+.row.flash-row { animation:flashIn .5s ease-out; }
+@keyframes flashIn { 0%{background:var(--accent-light)} 100%{background:transparent} }
 
 .row-time {
-  width:56px; flex-shrink:0; font-size:9px; color:var(--dim);
-  font-family:'JetBrains Mono',monospace; padding-top:2px; line-height:1.4;
+  width:60px; flex-shrink:0; font-size:11px; color:var(--text-dim);
+  font-family:'IBM Plex Mono',monospace; padding-top:1px; line-height:1.5;
 }
-.row-icon { width:18px; flex-shrink:0; font-size:12px; text-align:center; padding-top:1px; }
+.row-icon { width:24px; flex-shrink:0; font-size:14px; text-align:center; padding-top:1px; }
 .row-body { flex:1; min-width:0; }
-.row-text { font-size:11.5px; line-height:1.45; color:var(--text); word-break:break-word; }
-.row-detail { font-size:9px; color:var(--dim); font-family:'JetBrains Mono',monospace; margin-top:2px; }
-.row-badge {
-  flex-shrink:0; font-size:9px; font-family:'JetBrains Mono',monospace;
-  padding:1px 6px; border-radius:3px; font-weight:500;
+.row-text { font-size:13px; line-height:1.4; color:var(--text); }
+.row-detail { font-size:11px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; margin-top:2px; }
+
+/* Badges */
+.badge {
+  flex-shrink:0; font-size:10px; font-weight:500;
+  padding:2px 8px; border-radius:10px; white-space:nowrap;
 }
-.badge-purple { background:rgba(167,139,250,.12); color:var(--purple); }
-.badge-cyan { background:rgba(52,211,153,.12); color:var(--cyan); }
-.badge-gold { background:rgba(240,176,96,.12); color:var(--gold); }
-.badge-coral { background:rgba(240,104,104,.12); color:var(--coral); }
-.badge-teal { background:rgba(45,212,191,.12); color:var(--teal); }
-.badge-orange { background:rgba(251,146,60,.12); color:var(--orange); }
-.badge-blue { background:rgba(96,165,250,.12); color:var(--blue); }
+.badge-campaign { background:var(--red-bg); color:var(--red); }
+.badge-revenue { background:var(--teal-bg); color:var(--teal); }
+.badge-content { background:var(--amber-bg); color:var(--amber); }
+.badge-health { background:var(--green-bg); color:var(--green); }
+.badge-generic { background:var(--bg); color:var(--text-secondary); }
+.badge-event { background:var(--accent-light); color:var(--accent); }
+.badge-episode { background:var(--purple-bg); color:var(--purple); }
+.badge-pattern { background:var(--amber-bg); color:var(--amber); }
+.badge-signal { background:var(--red-bg); color:var(--red); }
+.badge-sync { background:var(--teal-bg); color:var(--teal); }
+.badge-guidance { background:var(--purple-bg); color:var(--purple); }
 
-/* Pattern confidence bar */
-.conf-bar { display:flex; align-items:center; gap:6px; }
-.conf-track { width:48px; height:4px; background:rgba(255,255,255,.04); border-radius:2px; overflow:hidden; flex-shrink:0; }
-.conf-fill { height:100%; border-radius:2px; transition:width .6s ease; }
-.conf-val { font-size:10px; font-family:'JetBrains Mono',monospace; width:32px; }
+/* Confidence bar */
+.conf-bar { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.conf-track { width:48px; height:5px; background:var(--bg); border-radius:3px; overflow:hidden; }
+.conf-fill { height:100%; border-radius:3px; transition:width .4s; }
+.conf-val { font-size:11px; font-family:'IBM Plex Mono',monospace; font-weight:500; width:32px; }
 
-/* Watermark status */
-.stream-status { display:flex; align-items:center; gap:6px; padding:10px 14px; border-bottom:1px solid rgba(255,255,255,.03); }
-.stream-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
-.stream-dot.active { background:var(--cyan); box-shadow:0 0 6px var(--cyan); }
-.stream-dot.stale { background:var(--gold); }
-.stream-dot.dead { background:var(--coral); }
+/* Streams */
+.stream-status { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border-light); }
+.stream-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.stream-dot.active { background:var(--green); }
+.stream-dot.stale { background:var(--amber); }
+.stream-dot.dead { background:var(--red); }
 .stream-info { flex:1; }
-.stream-name { font-size:11px; font-weight:600; color:var(--text); }
-.stream-ts { font-size:9px; color:var(--dim); font-family:'JetBrains Mono',monospace; margin-top:1px; }
+.stream-name { font-size:13px; font-weight:600; }
+.stream-ts { font-size:11px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; margin-top:2px; }
 
-/* Empty state */
-.empty-state { padding:24px 14px; text-align:center; color:var(--dim); font-size:11px; }
+.empty-state { padding:24px 16px; text-align:center; color:var(--text-dim); font-size:12px; }
 
 /* Loading */
 #loading {
-  position:fixed; inset:0; z-index:50; background:var(--bg);
+  position:fixed; inset:0; z-index:50; background:var(--white);
   display:flex; align-items:center; justify-content:center; flex-direction:column; gap:12px;
   transition:opacity .4s;
 }
 #loading.done { opacity:0; pointer-events:none; }
-.spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--cyan); border-radius:50%; animation:spin .7s linear infinite; }
+.spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
 @keyframes spin { to{transform:rotate(360deg)} }
 
-/* Responsive: stack on small screens */
-@media(max-width:1100px) { .grid { grid-template-columns:1fr 1fr; grid-template-rows:auto; } }
-@media(max-width:700px) { .grid { grid-template-columns:1fr; } .stats-bar { gap:14px; } .stat-val { font-size:14px; } }
+@media(max-width:1100px) { .grid { grid-template-columns:1fr 1fr; } }
+@media(max-width:700px) { .grid { grid-template-columns:1fr; } .stats-bar { gap:12px; } .stat-val { font-size:16px; } }
 </style>
 </head>
 <body>
 
-<div id="loading"><div class="spinner"></div><div style="font-size:10px;color:var(--dim);letter-spacing:2px;font-family:'JetBrains Mono',monospace">CONNECTING TO SUPABASE</div></div>
+<div id="loading"><div class="spinner"></div><div style="font-size:11px;color:var(--text-dim);font-family:'IBM Plex Mono',monospace">Loading...</div></div>
 
 <div class="header">
   <div class="logo">
     <div class="logo-dot"></div>
-    <span class="logo-name">BRIGHTMATTER</span>
+    <span class="logo-name">BrightMatter</span>
     <span class="logo-tag">LIVE</span>
   </div>
   <div class="stats-bar" id="stats-bar"></div>
   <div class="meta-right">
     <div class="refresh-badge">
-      <span class="live">&#9679; STREAMING</span> &mdash; 10s refresh<br>
+      <span class="live">&#9679; Live</span> &mdash; 10s<br>
       <span id="last-update"></span>
     </div>
   </div>
 </div>
 
 <div class="grid">
-  <!-- Panel 1: Activity Feed -->
   <div class="panel" id="panel-feed">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--cyan)"></div>Activity Feed</div>
+      <div class="panel-title"><span class="panel-icon">&#9889;</span> Activity Feed</div>
       <div class="panel-count" id="feed-count"></div>
     </div>
     <div class="panel-filters" id="feed-filters">
@@ -186,24 +193,22 @@ html, body { height:100%; background:var(--bg); color:var(--text); font-family:'
     <div class="panel-scroll" id="feed-scroll"></div>
   </div>
 
-  <!-- Panel 2: Patterns -->
   <div class="panel" id="panel-patterns">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--gold)"></div>Semantic Patterns</div>
+      <div class="panel-title"><span class="panel-icon">&#10024;</span> Learned Patterns</div>
       <div class="panel-count" id="pattern-count"></div>
     </div>
     <div class="panel-filters" id="pattern-filters">
-      <button class="filter-btn active" data-sort="confidence">By Confidence</button>
-      <button class="filter-btn" data-sort="evidence">By Evidence</button>
+      <button class="filter-btn active" data-sort="confidence">Confidence</button>
+      <button class="filter-btn" data-sort="evidence">Evidence</button>
       <button class="filter-btn" data-sort="recent">Recent</button>
     </div>
     <div class="panel-scroll" id="pattern-scroll"></div>
   </div>
 
-  <!-- Panel 3: Episodes -->
   <div class="panel" id="panel-episodes">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--purple)"></div>Recent Episodes</div>
+      <div class="panel-title"><span class="panel-icon">&#129504;</span> Recent Episodes</div>
       <div class="panel-count" id="episode-count"></div>
     </div>
     <div class="panel-filters" id="episode-filters">
@@ -216,28 +221,25 @@ html, body { height:100%; background:var(--bg); color:var(--text); font-family:'
     <div class="panel-scroll" id="episode-scroll"></div>
   </div>
 
-  <!-- Panel 4: Skill Distribution -->
   <div class="panel" id="panel-skills">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--accent)"></div>Skills &amp; Domains</div>
+      <div class="panel-title"><span class="panel-icon">&#128200;</span> Skills &amp; Domains</div>
       <div class="panel-count" id="skill-count"></div>
     </div>
     <div class="panel-scroll" id="skill-scroll"></div>
   </div>
 
-  <!-- Panel 5: Data Streams -->
   <div class="panel" id="panel-streams">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--teal)"></div>Data Streams</div>
+      <div class="panel-title"><span class="panel-icon">&#128225;</span> Data Streams</div>
       <div class="panel-count" id="stream-count"></div>
     </div>
     <div class="panel-scroll" id="stream-scroll"></div>
   </div>
 
-  <!-- Panel 6: Guidance Cache -->
   <div class="panel" id="panel-guidance">
     <div class="panel-header">
-      <div class="panel-title"><div class="dot" style="background:var(--blue)"></div>Guidance Cache</div>
+      <div class="panel-title"><span class="panel-icon">&#129517;</span> Guidance Cache</div>
       <div class="panel-count" id="guidance-count"></div>
     </div>
     <div class="panel-scroll" id="guidance-scroll"></div>
@@ -249,7 +251,7 @@ const API = window.location.origin;
 const ICONS = {
   bolt:'\u26A1', brain:'\uD83E\uDDE0', sparkle:'\u2728', signal:'\uD83D\uDCE1',
   sync:'\uD83D\uDD04', robot:'\uD83E\uDD16', compass:'\uD83E\uDDED',
-  mic:'\uD83C\uDF99\uFE0F', link:'\uD83D\uDD17'
+  mic:'\uD83C\uDF99\uFE0F', link:'\uD83D\uDD17', chart:'\uD83D\uDCC8'
 };
 const EST = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true};
 const EST_FULL = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,month:'short',day:'numeric'};
@@ -262,57 +264,49 @@ function ago(iso) {
   if(s<60)return 'now';if(s<3600)return Math.floor(s/60)+'m';
   if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';
 }
-function confColor(c) { return c>.8?'var(--cyan)':c>.6?'var(--gold)':'var(--coral)'; }
+function confColor(c) { return c>.7?'var(--green)':c>.4?'var(--amber)':'var(--red)'; }
+function str(v) { return typeof v==='string'?v:Array.isArray(v)?v.join(', '):v&&typeof v==='object'?Object.values(v).filter(x=>typeof x==='string'||typeof x==='number').join(', '):String(v||''); }
 
-// ── State ──
-let feedFilter = 'all';
-let patternSort = 'confidence';
-let episodeDomain = 'all';
-let prevFeedIds = new Set();
-let prevPatternIds = new Set();
+let feedFilter='all', patternSort='confidence', episodeDomain='all';
+let prevFeedIds=new Set(), prevPatternIds=new Set();
 
-// ── Filter wiring ──
-document.getElementById('feed-filters').addEventListener('click', e => {
+document.getElementById('feed-filters').addEventListener('click',e=>{
   if(!e.target.classList.contains('filter-btn'))return;
   document.querySelectorAll('#feed-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active');
-  feedFilter = e.target.dataset.filter;
-  renderFeedPanel(lastFeed);
+  e.target.classList.add('active'); feedFilter=e.target.dataset.filter; renderFeedPanel(lastFeed);
 });
-document.getElementById('pattern-filters').addEventListener('click', e => {
+document.getElementById('pattern-filters').addEventListener('click',e=>{
   if(!e.target.classList.contains('filter-btn'))return;
   document.querySelectorAll('#pattern-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active');
-  patternSort = e.target.dataset.sort;
-  renderPatterns(lastData);
+  e.target.classList.add('active'); patternSort=e.target.dataset.sort; renderPatterns(lastData);
 });
-document.getElementById('episode-filters').addEventListener('click', e => {
+document.getElementById('episode-filters').addEventListener('click',e=>{
   if(!e.target.classList.contains('filter-btn'))return;
   document.querySelectorAll('#episode-filters .filter-btn').forEach(b=>b.classList.remove('active'));
-  e.target.classList.add('active');
-  episodeDomain = e.target.dataset.domain;
-  renderEpisodes(lastData);
+  e.target.classList.add('active'); episodeDomain=e.target.dataset.domain; renderEpisodes(lastData);
 });
 
 // ── Stats ──
 function renderStats(d) {
+  const uniquePatterns = deduplicatePatterns(d.patterns).length;
+  const totalSkills = Object.keys(d.skill_dist).length;
   const items = [
-    {v:d.episodes.length, l:'Episodes', c:'var(--purple)'},
-    {v:d.patterns.length, l:'Patterns', c:'var(--gold)'},
-    {v:Object.keys(d.skill_dist).length, l:'Skills', c:'var(--cyan)'},
-    {v:(d.avg_confidence*100).toFixed(0)+'%', l:'Confidence', c:'var(--coral)'},
-    {v:d.signal_count, l:'Signals', c:'var(--teal)'},
-    {v:d.event_count, l:'Events', c:'var(--blue)'}
+    {v:d.episode_total||d.episodes.length, l:'Episodes'},
+    {v:uniquePatterns, l:'Patterns'},
+    {v:totalSkills, l:'Skills'},
+    {v:(d.avg_confidence*100).toFixed(0)+'%', l:'Avg Conf.'},
+    {v:d.signal_count, l:'Signals'},
+    {v:d.event_count, l:'Events'}
   ];
-  const el = document.getElementById('stats-bar');
-  if(!el.children.length) {
-    items.forEach(s => {
+  const el=document.getElementById('stats-bar');
+  if(!el.children.length){
+    items.forEach(s=>{
       const x=document.createElement('div'); x.className='stat';
-      x.innerHTML=`<div class="stat-val" style="color:${s.c}" data-stat="${s.l}">${s.v}</div><div class="stat-label">${s.l}</div>`;
+      x.innerHTML=`<div class="stat-val" data-stat="${s.l}">${s.v}</div><div class="stat-label">${s.l}</div>`;
       el.appendChild(x);
     });
   } else {
-    items.forEach(s => {
+    items.forEach(s=>{
       const v=el.querySelector(`[data-stat="${s.l}"]`);
       if(v&&v.textContent!==String(s.v)){v.textContent=s.v;v.classList.add('flash');setTimeout(()=>v.classList.remove('flash'),700);}
     });
@@ -320,163 +314,266 @@ function renderStats(d) {
 }
 
 // ── Feed Panel ──
-let lastFeed = [];
+let lastFeed=[];
 function renderFeedPanel(feed) {
-  lastFeed = feed;
-  const filtered = feedFilter==='all' ? feed : feed.filter(f=>f.type===feedFilter);
-  document.getElementById('feed-count').textContent = filtered.length + ' items';
-  const el = document.getElementById('feed-scroll');
-  const newIds = new Set(filtered.map(f=>f.ts+f.text));
-  let html = '';
-  filtered.forEach(f => {
-    const isNew = !prevFeedIds.has(f.ts+f.text);
-    html += `<div class="row${isNew?' flash-row':''}">
+  lastFeed=feed;
+  const filtered=feedFilter==='all'?feed:feed.filter(f=>f.type===feedFilter);
+  document.getElementById('feed-count').textContent=filtered.length;
+  const el=document.getElementById('feed-scroll');
+  const newIds=new Set(filtered.map(f=>f.ts+f.text));
+  let html='';
+  filtered.forEach(f=>{
+    const isNew=!prevFeedIds.has(f.ts+f.text);
+    const badgeClass='badge-'+f.type;
+    html+=`<div class="row${isNew?' flash-row':''}">
       <div class="row-time">${toTime(f.ts)}<br>${ago(f.ts)}</div>
-      <div class="row-icon" style="color:var(--${f.color||'dim'})">${ICONS[f.icon]||'\u25CF'}</div>
+      <div class="row-icon">${ICONS[f.icon]||'\u25CF'}</div>
       <div class="row-body">
         <div class="row-text">${f.text}</div>
         ${f.detail?`<div class="row-detail">${f.detail}</div>`:''}
       </div>
-      <div class="row-badge badge-${f.color||'purple'}">${f.type}</div>
+      <div class="badge ${badgeClass}">${f.type}</div>
     </div>`;
   });
-  el.innerHTML = html || '<div class="empty-state">No activity yet</div>';
-  prevFeedIds = newIds;
+  el.innerHTML=html||'<div class="empty-state">No activity yet</div>';
+  prevFeedIds=newIds;
 }
 
 // ── Patterns Panel ──
-let lastData = null;
+let lastData=null;
+
+function describePattern(p) {
+  const cond=p.condition||{};
+  const rec=p.recommendation||{};
+  const skill=p.skill_name||'unknown';
+
+  const condParts=[];
+  if(cond.channel) condParts.push(str(cond.channel).replace(/[._]/g,' '));
+  if(cond.platform) condParts.push(str(cond.platform));
+  if(cond.strategy) condParts.push(str(cond.strategy));
+  if(cond.funnel_stage) condParts.push(str(cond.funnel_stage)+' funnel');
+  if(cond.client_id) condParts.push(str(cond.client_id));
+  if(cond.industry) condParts.push(str(cond.industry));
+  if(cond.quarter) condParts.push(str(cond.quarter));
+
+  const recParts=[];
+  if(rec.action) recParts.push(str(rec.action));
+  if(rec.summary) recParts.push(str(rec.summary));
+  if(rec.expected_cpa) recParts.push('CPA $'+Number(rec.expected_cpa).toFixed(0));
+  if(rec.expected_roas) recParts.push('ROAS '+Number(rec.expected_roas).toFixed(1)+'x');
+  if(rec.expected_ctr) recParts.push('CTR '+(Number(rec.expected_ctr)*100).toFixed(1)+'%');
+  if(rec.target_spend) recParts.push('$'+Number(rec.target_spend).toLocaleString()+' spend');
+
+  const ev=p.expected_value;
+  const evLabel=ev&&ev!==1?(ev>1?'+'+((ev-1)*100).toFixed(0)+'% lift':((ev-1)*100).toFixed(0)+'% change'):'';
+
+  let title='';
+  if(condParts.length){
+    title=condParts.join(' \u00B7 ');
+  } else {
+    title=skill.replace(/[-_]/g,' ').replace(/:.*$/,'');
+  }
+
+  let subtitle='';
+  if(recParts.length) subtitle=recParts.join(' \u00B7 ');
+  else if(evLabel) subtitle=evLabel;
+
+  if(!subtitle){
+    const extra=Object.keys(cond).filter(k=>!['channel','platform','strategy','funnel_stage','client_id','industry','quarter'].includes(k));
+    subtitle=extra.slice(0,3).map(k=>`${k}: ${String(cond[k]).substring(0,25)}`).join(', ');
+  }
+
+  return {title, subtitle, domain:p.domain||'generic'};
+}
+
+function deduplicatePatterns(patterns) {
+  const seen=new Map();
+  patterns.forEach(p=>{
+    const desc=describePattern(p);
+    const key=(p.skill_name||'')+'|'+(p.domain||'')+'|'+desc.title;
+    const existing=seen.get(key);
+    if(!existing||(p.confidence||0)>(existing.confidence||0)) seen.set(key,p);
+  });
+  return Array.from(seen.values());
+}
+
 function renderPatterns(d) {
   if(!d)return;
-  let patterns = [...d.patterns];
+  let patterns=deduplicatePatterns(d.patterns);
+
   if(patternSort==='confidence') patterns.sort((a,b)=>(b.confidence||0)-(a.confidence||0));
   else if(patternSort==='evidence') patterns.sort((a,b)=>(b.evidence_count||0)-(a.evidence_count||0));
   else patterns.sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0));
 
-  document.getElementById('pattern-count').textContent = patterns.length + ' patterns';
-  const el = document.getElementById('pattern-scroll');
-  const newIds = new Set(patterns.map(p=>p.pattern_id));
-  let html = '';
-  patterns.forEach(p => {
-    const c = p.confidence||0;
-    const ev = p.evidence_count||0;
-    const isNew = !prevPatternIds.has(p.pattern_id);
-    const wins = p.successes||0, losses = p.failures||0;
-    const wr = (wins+losses)>0 ? ((wins/(wins+losses))*100).toFixed(0)+'%' : '—';
-    html += `<div class="row${isNew?' flash-row':''}">
-      <div class="row-body">
-        <div class="row-text" style="font-weight:500">${p.skill_name||'unknown'}</div>
-        <div class="row-detail">${p.domain||'generic'} · ${ev} evidence · ${wins}W/${losses}L (${wr})</div>
+  document.getElementById('pattern-count').textContent=patterns.length;
+  const el=document.getElementById('pattern-scroll');
+  const newIds=new Set(patterns.map(p=>p.pattern_id));
+  let html='';
+  patterns.forEach(p=>{
+    const c=p.confidence||0;
+    const ev=p.evidence_count||0;
+    const isNew=!prevPatternIds.has(p.pattern_id);
+    const wins=p.successes||0, losses=p.failures||0;
+    const wr=(wins+losses)>0?((wins/(wins+losses))*100).toFixed(0)+'%':'\u2014';
+    const desc=describePattern(p);
+    const updated=p.updated_at?ago(p.updated_at)+' ago':'';
+
+    html+=`<div class="row${isNew?' flash-row':''}" style="flex-wrap:wrap">
+      <div class="row-body" style="flex:1;min-width:0">
+        <div class="row-text" style="font-weight:500">${desc.title}</div>
+        ${desc.subtitle?`<div class="row-detail" style="color:var(--text-secondary);margin-top:1px">${desc.subtitle}</div>`:''}
+        <div class="row-detail">${ev} evidence \u00B7 ${wins}W/${losses}L (${wr})${updated?' \u00B7 '+updated:''}</div>
       </div>
-      <div class="conf-bar">
-        <div class="conf-track"><div class="conf-fill" style="width:${(c*100).toFixed(0)}%;background:${confColor(c)}"></div></div>
-        <div class="conf-val" style="color:${confColor(c)}">${(c*100).toFixed(0)}%</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <div class="badge badge-${desc.domain}">${desc.domain}</div>
+        <div class="conf-bar">
+          <div class="conf-track"><div class="conf-fill" style="width:${(c*100).toFixed(0)}%;background:${confColor(c)}"></div></div>
+          <div class="conf-val" style="color:${confColor(c)}">${(c*100).toFixed(0)}%</div>
+        </div>
       </div>
     </div>`;
   });
-  el.innerHTML = html || '<div class="empty-state">No patterns formed yet</div>';
-  prevPatternIds = newIds;
+  el.innerHTML=html||'<div class="empty-state">No patterns formed yet</div>';
+  prevPatternIds=newIds;
 }
 
 // ── Episodes Panel ──
+function describeEpisode(ep) {
+  const skill=ep.skill_name||'unknown';
+  const pred=ep.prediction||{};
+  const outcome=ep.outcome||{};
+  const ctx=pred.context||{};
+  const meta=outcome.metadata||{};
+  const channel=ctx.channel||'';
+  const source=ctx.source||meta._episode_source||'';
+
+  let title=skill.replace(/[-_]/g,' ').replace(/:.*$/,'');
+  let detail='';
+
+  if(source==='bigquery-delta'||source==='bigquery'){
+    const ch=channel?String(channel).replace(/[._]/g,' '):'';
+    title=ch?ch+' data':title;
+    const parts=[];
+    if(meta.spend!=null) parts.push('$'+Number(meta.spend).toLocaleString()+' spend');
+    if(meta.cpa!=null&&meta.cpa>0) parts.push('$'+Number(meta.cpa).toFixed(0)+' CPA');
+    if(meta.roas!=null&&meta.roas>0) parts.push(Number(meta.roas).toFixed(1)+'x ROAS');
+    detail=parts.join(' \u00B7 ');
+  } else if(source==='call_transcript'){
+    title=meta.summary||skill.replace(/[-_]/g,' ');
+    if(meta.quotes&&meta.quotes[0]) detail='\u201C'+String(meta.quotes[0]).substring(0,80)+'\u201D';
+  } else if(skill.includes('cross-metric-correlation')){
+    title='Correlation: '+(meta.correlation_type||'multi-metric');
+    detail=channel?String(channel).replace(/[._]/g,' '):'';
+  } else if(ctx.summary){
+    title=ctx.summary;
+  } else if(meta.summary){
+    title=meta.summary;
+  }
+
+  if(title.length>90) title=title.substring(0,87)+'...';
+  return {title,detail};
+}
+
 function renderEpisodes(d) {
   if(!d)return;
-  let episodes = [...d.episodes];
-  if(episodeDomain!=='all') episodes = episodes.filter(e=>(e.domain||'generic')===episodeDomain);
+  let episodes=[...d.episodes];
+  if(episodeDomain!=='all') episodes=episodes.filter(e=>(e.domain||'generic')===episodeDomain);
 
-  document.getElementById('episode-count').textContent = episodes.length + ' episodes';
-  const el = document.getElementById('episode-scroll');
-  let html = '';
-  episodes.slice(0,80).forEach(ep => {
-    const skill = ep.skill_name||'unknown';
-    const domain = ep.domain||'generic';
-    const pe = ep.prediction_error||0;
-    const w = (ep.weight||0).toFixed(2);
-    const domColor = {campaign:'coral',revenue:'cyan',content:'gold',health:'teal',generic:'purple'}[domain]||'purple';
-    html += `<div class="row">
+  document.getElementById('episode-count').textContent=episodes.length;
+  const el=document.getElementById('episode-scroll');
+  let html='';
+  episodes.slice(0,100).forEach(ep=>{
+    const domain=ep.domain||'generic';
+    const pe=ep.prediction_error||0;
+    const w=(ep.weight||0).toFixed(2);
+    const desc=describeEpisode(ep);
+    const peLabel=pe>0.05?' \u00B7 '+( pe*100).toFixed(0)+'% error':'';
+    html+=`<div class="row">
       <div class="row-time">${toTime(ep.created_at)}<br>${ago(ep.created_at)}</div>
       <div class="row-body">
-        <div class="row-text">${skill}</div>
-        <div class="row-detail">weight ${w} · error ${(pe*100).toFixed(1)}%</div>
+        <div class="row-text">${desc.title}</div>
+        <div class="row-detail">${desc.detail?desc.detail+' \u00B7 ':''}w:${w}${peLabel}</div>
       </div>
-      <div class="row-badge badge-${domColor}">${domain}</div>
+      <div class="badge badge-${domain}">${domain}</div>
     </div>`;
   });
-  el.innerHTML = html || '<div class="empty-state">No episodes yet</div>';
+  el.innerHTML=html||'<div class="empty-state">No episodes yet</div>';
 }
 
 // ── Skills Panel ──
 function renderSkills(d) {
   if(!d)return;
-  const skills = Object.entries(d.skill_dist).sort((a,b)=>b[1]-a[1]);
-  const domains = Object.entries(d.domain_dist).sort((a,b)=>b[1]-a[1]);
-  const mx = skills.length ? skills[0][1] : 1;
+  const skills=Object.entries(d.skill_dist).sort((a,b)=>b[1]-a[1]);
+  const domains=Object.entries(d.domain_dist).sort((a,b)=>b[1]-a[1]);
+  const mx=skills.length?skills[0][1]:1;
 
-  document.getElementById('skill-count').textContent = skills.length + ' skills';
-  const el = document.getElementById('skill-scroll');
+  document.getElementById('skill-count').textContent=skills.length+' skills';
+  const el=document.getElementById('skill-scroll');
 
-  let html = '<div style="padding:10px 14px 6px"><div style="font-size:9px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);margin-bottom:8px">Domains</div>';
-  const domColors = {campaign:'var(--coral)',revenue:'var(--cyan)',content:'var(--gold)',health:'var(--teal)',generic:'var(--purple)'};
-  domains.forEach(([dom,n]) => {
-    html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
-      <div style="width:7px;height:7px;border-radius:50%;background:${domColors[dom]||'var(--dim)'}"></div>
-      <div style="flex:1;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary)">${dom}</div>
-      <div style="font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${domColors[dom]||'var(--dim)'}">${n}</div>
+  let html='<div style="padding:12px 16px 8px"><div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">Domains</div>';
+  domains.forEach(([dom,n])=>{
+    const c={campaign:'var(--red)',revenue:'var(--teal)',content:'var(--amber)',health:'var(--green)',generic:'var(--text-dim)'}[dom]||'var(--text-dim)';
+    html+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <div style="width:8px;height:8px;border-radius:50%;background:${c}"></div>
+      <div style="flex:1;font-size:12px;font-weight:500;text-transform:capitalize">${dom}</div>
+      <div style="font-size:13px;font-weight:600;font-family:'IBM Plex Mono',monospace">${n}</div>
     </div>`;
   });
 
-  html += '</div><div style="padding:10px 14px 6px"><div style="font-size:9px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);margin-bottom:8px">Episodes by Skill</div>';
-  skills.forEach(([s,n]) => {
-    const pct = (n/mx*100).toFixed(0);
-    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0">
-      <div style="width:110px;font-size:10px;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${s}">${s}</div>
-      <div style="flex:1;height:4px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">
-        <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:2px;transition:width .6s"></div>
+  html+='</div><div style="padding:12px 16px 8px"><div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">Episode Distribution</div>';
+  skills.forEach(([s,n])=>{
+    const pct=(n/mx*100).toFixed(0);
+    const label=s.replace(/[-_]/g,' ').replace(/:.*$/,'');
+    html+=`<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+      <div style="width:110px;font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${s}">${label}</div>
+      <div style="flex:1;height:5px;background:var(--bg);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:3px;transition:width .4s"></div>
       </div>
-      <div style="width:28px;text-align:right;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--dim)">${n}</div>
+      <div style="width:30px;text-align:right;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--text-dim)">${n}</div>
     </div>`;
   });
-  html += '</div>';
-  el.innerHTML = html;
+  html+='</div>';
+  el.innerHTML=html;
 }
 
 // ── Streams Panel ──
 function renderStreams(d) {
   if(!d)return;
-  const wm = d.watermarks || [];
-  document.getElementById('stream-count').textContent = wm.length + ' sources';
-  const el = document.getElementById('stream-scroll');
-  let html = '';
-  wm.forEach(w => {
-    const ts = w.last_processed_at;
-    const secAgo = ts ? (Date.now()-new Date(ts).getTime())/1000 : Infinity;
-    const status = secAgo<3600?'active':secAgo<86400?'stale':'dead';
-    const statusLabel = status==='active'?'Synced':status==='stale'?'Stale':'Inactive';
-    html += `<div class="stream-status">
+  const wm=d.watermarks||[];
+  document.getElementById('stream-count').textContent=wm.length+' sources';
+  const el=document.getElementById('stream-scroll');
+  let html='';
+  wm.forEach(w=>{
+    const ts=w.last_processed_at;
+    const secAgo=ts?(Date.now()-new Date(ts).getTime())/1000:Infinity;
+    const status=secAgo<3600?'active':secAgo<86400?'stale':'dead';
+    const statusLabel=status==='active'?'Active':status==='stale'?'Stale':'Inactive';
+    html+=`<div class="stream-status">
       <div class="stream-dot ${status}"></div>
       <div class="stream-info">
         <div class="stream-name">${(w.source||'').toUpperCase()}</div>
-        <div class="stream-ts">${ts?toFull(ts)+' ET':'Never synced'} · ${statusLabel}</div>
+        <div class="stream-ts">${ts?toFull(ts)+' ET':'Never synced'} \u00B7 ${statusLabel}</div>
       </div>
-      <div class="row-badge badge-${status==='active'?'cyan':status==='stale'?'gold':'coral'}">${ago(ts)||'—'}</div>
+      <div class="badge badge-${status==='active'?'health':status==='stale'?'content':'campaign'}">${ago(ts)||'\u2014'}</div>
     </div>`;
   });
-  el.innerHTML = html || '<div class="empty-state">No data streams configured</div>';
+  el.innerHTML=html||'<div class="empty-state">No data streams configured</div>';
 }
 
 // ── Guidance Panel ──
 function renderGuidance(d) {
   if(!d)return;
-  const guidance = d.guidance || [];
-  document.getElementById('guidance-count').textContent = guidance.length + ' cached';
-  const el = document.getElementById('guidance-scroll');
-  let html = '';
-  guidance.forEach(g => {
-    const c = g.confidence||0;
-    html += `<div class="row">
+  const guidance=d.guidance||[];
+  document.getElementById('guidance-count').textContent=guidance.length;
+  const el=document.getElementById('guidance-scroll');
+  let html='';
+  guidance.forEach(g=>{
+    const c=g.confidence||0;
+    const label=(g.skill_name||'unknown').replace(/[-_]/g,' ');
+    html+=`<div class="row">
       <div class="row-body">
-        <div class="row-text">${g.skill_name||'unknown'}</div>
-        <div class="row-detail">${g.client_id||'all clients'} · ${g.domain||'generic'}</div>
+        <div class="row-text">${label}</div>
+        <div class="row-detail">${g.client_id||'all clients'} \u00B7 ${g.domain||'generic'}</div>
       </div>
       <div class="conf-bar">
         <div class="conf-track"><div class="conf-fill" style="width:${(c*100).toFixed(0)}%;background:${confColor(c)}"></div></div>
@@ -484,22 +581,20 @@ function renderGuidance(d) {
       </div>
     </div>`;
   });
-  el.innerHTML = html || '<div class="empty-state">No guidance cached</div>';
+  el.innerHTML=html||'<div class="empty-state">No guidance cached</div>';
 }
 
 // ── Main loop ──
-let firstLoad = true;
-
+let firstLoad=true;
 async function refresh() {
   try {
-    const [dataRes, feedRes] = await Promise.all([
+    const [dataRes,feedRes]=await Promise.all([
       fetch(API+'/api/v1/dashboard/data'),
       fetch(API+'/api/v1/dashboard/feed?limit=80')
     ]);
-    const data = await dataRes.json();
-    const feed = await feedRes.json();
-
-    lastData = data;
+    const data=await dataRes.json();
+    const feed=await feedRes.json();
+    lastData=data;
     renderStats(data);
     renderFeedPanel(feed);
     renderPatterns(data);
@@ -507,14 +602,12 @@ async function refresh() {
     renderSkills(data);
     renderStreams(data);
     renderGuidance(data);
-
     if(firstLoad){document.getElementById('loading').classList.add('done');firstLoad=false;}
-    document.getElementById('last-update').textContent = new Date().toLocaleString('en-US',EST_FULL)+' ET';
-  } catch(err) { console.error('Refresh failed:', err); }
+    document.getElementById('last-update').textContent=new Date().toLocaleString('en-US',EST_FULL)+' ET';
+  } catch(err){ console.error('Refresh failed:',err); }
 }
-
 refresh();
-setInterval(refresh, 10000);
+setInterval(refresh,10000);
 </script>
 </body>
 </html>

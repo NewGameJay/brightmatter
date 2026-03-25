@@ -6,11 +6,13 @@ Deploys the BrightMatter API and cron workers to Modal cloud.
     modal deploy modal_app.py
 
 Functions:
-    api_endpoint      — FastAPI ASGI app (always on)
-    worker_cron        — Event processing + consolidation (every 15 min)
-    weekly_eval        — Shadow eval + gold standards (Sundays 10:00 UTC)
-    improvement_review — Improvement analysis (Mondays 12:00 UTC)
-    health_check       — On-demand connectivity check
+    api_endpoint         — FastAPI ASGI app (always on)
+    worker_cron          — Event processing + consolidation (every 15 min)
+    platform_data_cron   — Daily platform data pull at 1pm EST / 18:00 UTC
+    platform_backfill    — On-demand historical backfill
+    weekly_eval          — Shadow eval + gold standards (Sundays 10:00 UTC)
+    improvement_review   — Improvement analysis (Mondays 12:00 UTC)
+    health_check         — On-demand connectivity check
 """
 
 import modal
@@ -31,6 +33,8 @@ bm_image = (
         "httpx>=0.27.0",
         "google-cloud-bigquery>=3.20.0",
         "requests>=2.31.0",
+        "firebase-admin>=6.0.0",
+        "google-ads>=24.0.0",
     )
     .add_local_dir(".", remote_path=WORKSPACE_PATH, copy=True)
 )
@@ -41,7 +45,7 @@ _required_secrets = [
 ]
 
 _optional_secrets = []
-for _name in ("bm-bigquery", "bm-airtable"):
+for _name in ("bm-bigquery", "bm-airtable", "mh1-firebase", "mh1-all"):
     try:
         _optional_secrets.append(modal.Secret.from_name(_name, required_keys=[]))
     except Exception:
@@ -102,6 +106,73 @@ def worker_cron():
         return stats
     except Exception as e:
         logger.error(f"Worker cycle failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# ── Platform Data Cron (daily 1pm EST = 18:00 UTC) ───────────────────
+
+@app.function(
+    image=bm_image,
+    secrets=bm_secrets,
+    timeout=1200,
+    schedule=modal.Cron("0 18 * * *"),
+)
+def platform_data_cron():
+    """Pull yesterday's platform data for all clients into Supabase."""
+    _setup_workspace()
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("brightmatter.cron.platform")
+
+    try:
+        from lib.platform_ingestion import PlatformDataOrchestrator
+        orch = PlatformDataOrchestrator(backfill=False)
+        stats = orch.run_daily()
+        logger.info(f"Platform data cron complete: {stats}")
+        return stats
+    except Exception as e:
+        logger.error(f"Platform data cron failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# ── Platform Backfill (on-demand) ────────────────────────────────────
+
+@app.function(
+    image=bm_image,
+    secrets=bm_secrets,
+    timeout=3600,
+)
+def platform_backfill(
+    years: int = 3,
+    client_filter: str = None,
+    platform_filter: str = None,
+):
+    """On-demand historical backfill of platform data."""
+    _setup_workspace()
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("brightmatter.backfill.platform")
+
+    try:
+        from lib.platform_ingestion import PlatformDataOrchestrator
+        orch = PlatformDataOrchestrator(backfill=True)
+        stats = orch.run_backfill(
+            lookback_years=years,
+            client_filter=client_filter,
+            platform_filter=platform_filter,
+        )
+        logger.info(f"Platform backfill complete: {stats}")
+        return stats
+    except Exception as e:
+        logger.error(f"Platform backfill failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 

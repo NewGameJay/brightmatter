@@ -1,10 +1,13 @@
 """
 BrightMatter Cron Worker
 
-Three-tier data ingestion + learning pipeline:
+Six-tier data ingestion + learning pipeline:
     Tier 1 — Ingest signals from shared Supabase (MH-OS Trigger.dev output)
     Tier 2 — Ingest daily spend deltas from BigQuery (when credentials available)
     Tier 3 — Publish high-confidence patterns to Airtable (when credentials available)
+    Tier 4 — Ingest call transcripts from MH-OS Supabase
+    Tier 5 — Ingest client dashboard data from Firebase clientData
+    Tier 6 — Multi-platform client data (separate cron: platform_data_cron)
 
 Plus: pull events, process through learning pipeline, consolidate,
 refresh guidance cache.
@@ -19,6 +22,7 @@ Requires:
 Optional:
     BIGQUERY_CREDENTIALS_JSON — enables Tier 2 (BQ daily delta)
     AIRTABLE_API_KEY          — enables Tier 3 (pattern publishing)
+    FIREBASE_PROJECT_ID + FIREBASE_SERVICE_ACCOUNT_JSON — enables Tier 5 (Firebase clientData)
 """
 
 from __future__ import annotations
@@ -137,6 +141,14 @@ class BrightMatterWorker:
                 logger.info(f"Tier 4 transcripts: {transcript_stats}")
             except Exception as e:
                 logger.debug(f"Tier 4 transcript ingestion skipped or failed: {e}")
+
+            # ── Tier 5: Ingest client data from Firebase ────────────
+            try:
+                fb_stats = self._ingest_firebase_client_data()
+                stats["firebase_episodes"] = fb_stats.get("episodes_created", 0)
+                logger.info(f"Tier 5 Firebase clientData: {fb_stats}")
+            except Exception as e:
+                logger.debug(f"Tier 5 Firebase ingestion skipped or failed: {e}")
 
             # ── Tier 3: Publish patterns to Airtable ─────────────────
             try:
@@ -1483,6 +1495,227 @@ class BrightMatterWorker:
         except Exception as e:
             logger.warning(f"Could not get active pairs: {e}")
             return []
+
+
+    # ── Tier 5: Firebase clientData ─────────────────────────────────
+
+    def _ingest_firebase_client_data(self) -> Dict[str, Any]:
+        """Pull client dashboard metrics and execution data from Firebase clientData."""
+        project_id = os.environ.get("FIREBASE_PROJECT_ID") or os.environ.get("GCP_PROJECT_ID")
+        if not project_id:
+            sa_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.environ.get("FIREBASE_CREDENTIALS_JSON")
+            if sa_json:
+                import json as _json
+                try:
+                    project_id = _json.loads(sa_json).get("project_id")
+                except Exception:
+                    pass
+        if not project_id:
+            return {"skipped": True, "reason": "no firebase credentials"}
+
+        from lib.firebase_client import get_firebase_client
+        fb = get_firebase_client(project_id=project_id)
+
+        watermark_key = "firebase-clientdata"
+        wm_res = self.supabase.table("bm_watermarks").select("*").eq("source", watermark_key).execute()
+        wm = (wm_res.data or [{}])[0] if wm_res.data else {}
+        last_ts = wm.get("last_processed_at", "2020-01-01T00:00:00Z")
+
+        stats = {"clients_scanned": 0, "episodes_created": 0, "errors": 0}
+
+        try:
+            clients = fb.get_collection("clients", limit=50)
+        except Exception as e:
+            logger.warning(f"Firebase: could not list clients: {e}")
+            return {"skipped": True, "reason": str(e)}
+
+        _f = lambda v: float(v) if v is not None else 0.0
+
+        for client_doc in clients:
+            client_id = client_doc.get("_id", "")
+            client_name = client_doc.get("name") or client_doc.get("displayName") or client_doc.get("company_name") or client_id
+            status = client_doc.get("status", "")
+            if status in ("archived", "deleted"):
+                continue
+
+            stats["clients_scanned"] += 1
+
+            subcollections = ["dashboard-metrics", "dashboard-creatives"]
+            for sub_name in subcollections:
+                try:
+                    docs = fb.get_collection(
+                        sub_name,
+                        parent_collection="clientData",
+                        parent_doc=client_id,
+                        limit=20,
+                    )
+                except Exception:
+                    continue
+
+                for doc in docs:
+                    doc_id = doc.get("_id", "")
+                    updated = doc.get("_updated_at") or doc.get("updated_at") or doc.get("refreshed_at", "")
+                    if updated and updated <= last_ts:
+                        continue
+
+                    metrics = doc.get("metrics") or doc.get("data") or {}
+                    if not metrics and not doc.get("rows"):
+                        continue
+
+                    try:
+                        skill_name = f"client-dashboard-{sub_name.replace('dashboard-', '')}"
+                        domain_str = "campaign" if "metric" in sub_name else "content" if "creative" in sub_name else "generic"
+
+                        from lib.intelligence.types import Domain, Prediction, Outcome, EpisodicMemory
+
+                        try:
+                            domain = Domain(domain_str)
+                        except ValueError:
+                            domain = Domain.GENERIC
+
+                        ctx = {
+                            "client_id": client_id,
+                            "client_name": client_name,
+                            "source": "firebase-clientdata",
+                            "dashboard_doc": doc_id,
+                            "sub_collection": sub_name,
+                        }
+
+                        summary_parts = []
+                        if isinstance(metrics, dict):
+                            for mk, mv in list(metrics.items())[:6]:
+                                if isinstance(mv, (int, float)):
+                                    ctx[mk] = mv
+                                    if mv > 0:
+                                        summary_parts.append(f"{mk}: {mv:,.0f}" if mv > 100 else f"{mk}: {mv:.2f}")
+                        elif isinstance(metrics, list):
+                            ctx["row_count"] = len(metrics)
+                            summary_parts.append(f"{len(metrics)} rows")
+
+                        if doc.get("rows"):
+                            ctx["row_count"] = len(doc["rows"])
+                            summary_parts.append(f"{len(doc['rows'])} creatives")
+
+                        meta = {
+                            "_episode_source": "firebase-clientdata",
+                            "summary": f"{client_name} {sub_name}: {', '.join(summary_parts)}" if summary_parts else f"{client_name} {sub_name}",
+                        }
+
+                        prediction = Prediction(
+                            skill_name=skill_name,
+                            tenant_id="marketerhire",
+                            domain=domain,
+                            expected_signal=1.0,
+                            expected_baseline=1.0,
+                            context=ctx,
+                        )
+                        outcome = Outcome(
+                            prediction_id=prediction.prediction_id,
+                            observed_signal=1.0,
+                            observed_baseline=1.0,
+                            goal_completed=True,
+                            metadata=meta,
+                        )
+                        episode = EpisodicMemory(
+                            skill_name=skill_name,
+                            tenant_id="marketerhire",
+                            domain=domain,
+                            prediction=prediction,
+                            outcome=outcome,
+                        )
+
+                        ep_store = self.engine._episodic
+                        ep_store.store(episode)
+                        stats["episodes_created"] += 1
+
+                    except Exception as e:
+                        logger.debug(f"Firebase episode failed for {client_id}/{doc_id}: {e}")
+                        stats["errors"] += 1
+
+            try:
+                exec_subs = fb.list_subcollections(f"clientData/{client_id}")
+                exec_subs = [s for s in exec_subs if s.startswith("exec-")]
+                for exec_sub in exec_subs[:5]:
+                    try:
+                        exec_docs = fb.get_collection(
+                            exec_sub,
+                            parent_collection="clientData",
+                            parent_doc=client_id,
+                            limit=5,
+                        )
+                    except Exception:
+                        continue
+
+                    for doc in exec_docs:
+                        doc_id = doc.get("_id", "")
+                        if doc_id != "latest":
+                            continue
+                        updated = doc.get("_updated_at") or ""
+                        if updated and updated <= last_ts:
+                            continue
+
+                        result_data = doc.get("result") or doc.get("data") or {}
+                        if not result_data:
+                            continue
+
+                        try:
+                            skill_label = exec_sub.replace("exec-", "")
+                            from lib.intelligence.types import Domain, Prediction, Outcome, EpisodicMemory
+
+                            ctx = {
+                                "client_id": client_id,
+                                "client_name": client_name,
+                                "source": "firebase-clientdata",
+                                "exec_skill": skill_label,
+                            }
+                            summary = result_data.get("summary", "") or f"{client_name} {skill_label} execution"
+                            meta = {
+                                "_episode_source": "firebase-clientdata",
+                                "summary": summary[:200] if isinstance(summary, str) else str(summary)[:200],
+                            }
+
+                            prediction = Prediction(
+                                skill_name=f"client-exec-{skill_label}",
+                                tenant_id="marketerhire",
+                                domain=Domain.GENERIC,
+                                expected_signal=1.0,
+                                expected_baseline=1.0,
+                                context=ctx,
+                            )
+                            outcome = Outcome(
+                                prediction_id=prediction.prediction_id,
+                                observed_signal=1.0,
+                                observed_baseline=1.0,
+                                goal_completed=True,
+                                metadata=meta,
+                            )
+                            episode = EpisodicMemory(
+                                skill_name=f"client-exec-{skill_label}",
+                                tenant_id="marketerhire",
+                                domain=Domain.GENERIC,
+                                prediction=prediction,
+                                outcome=outcome,
+                            )
+
+                            ep_store = self.engine._episodic
+                            ep_store.store(episode)
+                            stats["episodes_created"] += 1
+
+                        except Exception as e:
+                            logger.debug(f"Firebase exec episode failed: {e}")
+                            stats["errors"] += 1
+
+            except Exception as e:
+                logger.debug(f"Firebase exec subcollections failed for {client_id}: {e}")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self.supabase.table("bm_watermarks").upsert({
+            "source": watermark_key,
+            "last_processed_at": now_iso,
+            "updated_at": now_iso,
+        }, on_conflict="source").execute()
+
+        return stats
 
 
 def main():

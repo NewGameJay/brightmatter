@@ -351,3 +351,34 @@ CREATE INDEX IF NOT EXISTS idx_refknow_levers
 CREATE INDEX IF NOT EXISTS idx_refknow_expert
   ON reference_knowledge(expert_handle)
   WHERE expert_handle IS NOT NULL;
+
+-- ── Client Platform Data ─────────────────────────────────────────
+-- Raw aggregated metrics pulled daily from each client's platforms.
+-- Each (stream_id, metric_date, granularity) is unique to prevent
+-- duplicate rows on re-runs. stream_id format: "Platform-ClientName".
+
+CREATE TABLE IF NOT EXISTS client_platform_data (
+  id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  client_id       TEXT NOT NULL,
+  client_name     TEXT NOT NULL,
+  platform        TEXT NOT NULL,
+  stream_id       TEXT NOT NULL,
+  metric_date     DATE NOT NULL,
+  granularity     TEXT NOT NULL DEFAULT 'daily',
+  metrics         JSONB NOT NULL DEFAULT '{}',
+  raw_record_count INT DEFAULT 0,
+  source_account  TEXT,
+  ingestion_type  TEXT DEFAULT 'daily',
+  created_at      TIMESTAMPTZ DEFAULT now(),
+
+  UNIQUE(stream_id, metric_date, granularity)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cpd_stream
+  ON client_platform_data(stream_id, metric_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cpd_client
+  ON client_platform_data(client_id, platform, metric_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_cpd_platform
+  ON client_platform_data(platform, metric_date DESC);

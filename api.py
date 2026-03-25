@@ -440,18 +440,22 @@ async def dashboard_data():
     db = get_supabase()
 
     ep_res = db.table("episodic_memory").select(
-        "episode_id,skill_name,domain,weight,prediction_error,created_at"
-    ).order("created_at", desc=True).limit(500).execute()
+        "episode_id,skill_name,domain,weight,prediction_error,created_at,"
+        "prediction,outcome"
+    ).order("created_at", desc=True).limit(200).execute()
     episodes = ep_res.data or []
+
+    ep_total = db.table("episodic_memory").select("episode_id", count="exact").limit(0).execute()
 
     pat_res = db.table("semantic_patterns").select(
         "pattern_id,skill_name,domain,confidence,evidence_count,"
-        "successes,failures,recent_accuracy"
+        "successes,failures,recent_accuracy,condition,recommendation,"
+        "updated_at,created_at,client_id,expected_value"
     ).execute()
     patterns = pat_res.data or []
 
     guid_res = db.table("guidance_cache").select(
-        "skill_name,client_id,confidence"
+        "skill_name,client_id,confidence,domain,updated_at"
     ).execute()
     guidance = guid_res.data or []
 
@@ -461,13 +465,17 @@ async def dashboard_data():
     sig_res = db.table("signals").select("id", count="exact").limit(0).execute()
     ev_res = db.table("events").select("id", count="exact").limit(0).execute()
 
-    skill_dist: Dict[str, int] = {}
+    all_skills: Dict[str, int] = {}
     domain_dist: Dict[str, int] = {}
     for ep in episodes:
         s = ep.get("skill_name") or "unknown"
         d = ep.get("domain") or "generic"
-        skill_dist[s] = skill_dist.get(s, 0) + 1
+        all_skills[s] = all_skills.get(s, 0) + 1
         domain_dist[d] = domain_dist.get(d, 0) + 1
+    for p in patterns:
+        s = p.get("skill_name") or "unknown"
+        if s not in all_skills:
+            all_skills[s] = 0
 
     avg_conf = (
         sum(p.get("confidence") or 0 for p in patterns) / len(patterns)
@@ -481,7 +489,8 @@ async def dashboard_data():
         "watermarks": watermarks,
         "signal_count": sig_res.count or 0,
         "event_count": ev_res.count or 0,
-        "skill_dist": skill_dist,
+        "episode_total": ep_total.count or len(episodes),
+        "skill_dist": all_skills,
         "domain_dist": domain_dist,
         "avg_confidence": avg_conf,
     }
@@ -593,6 +602,29 @@ async def dashboard_feed(limit: int = 80):
             else:
                 text = f"Transcript signal: {skill}"
             detail = f"call / {transcript_id}" if transcript_id else "call transcript"
+        elif source == "firebase-clientdata":
+            icon = "bolt"
+            color = "cyan"
+            summary = meta.get("summary", "")
+            client_name = ctx.get("client_name", "")
+            text = summary if summary else f"{client_name} client data synced"
+            detail = f"firebase / {ctx.get('client_id', '')}"
+        elif source == "platform-ingestion":
+            icon = "chart"
+            color = "teal"
+            stream_id = ctx.get("stream_id", "")
+            client_name = ctx.get("client_name", "")
+            platform = ctx.get("platform", "")
+            metrics = (ep.get("outcome") or {}).get("metrics") or {}
+            spend = metrics.get("spend")
+            revenue = metrics.get("revenue")
+            parts = [f"{stream_id}"]
+            if spend is not None and spend > 0:
+                parts.append(f"${spend:,.0f} spend")
+            if revenue is not None and revenue > 0:
+                parts.append(f"${revenue:,.0f} revenue")
+            text = " — ".join(parts) if len(parts) > 1 else f"{stream_id} data ingested"
+            detail = f"{platform} / {client_name}"
         elif source == "bigquery-delta" and channel:
             parts = [f"Ingested {channel} daily data"]
             if spend is not None:
