@@ -54,39 +54,16 @@ class CampaignAdapter(BaseDomainAdapter):
     """
     Domain adapter for marketing campaign performance scoring.
     
-    This adapter evaluates campaign efficiency using inverse CPA (cost per acquisition)
-    as the primary signal. It supports various marketing channels with channel-specific
-    baselines and incorporates seasonal factors, funnel stage, and attribution models.
-    
-    The scoring philosophy prioritizes cost efficiency:
-    - Signal: How efficiently are we acquiring conversions? (1000 / CPA)
-    - Baseline: What efficiency should we expect for this channel/season?
-    - Context: How do funnel position, audience, and attribution affect expectations?
-    
-    Example Usage:
-        >>> adapter = CampaignAdapter()
-        >>> event = {
-        ...     "spend": 1000,
-        ...     "conversions": 25,
-        ...     "channel": "paid_search",
-        ...     "revenue": 5000
-        ... }
-        >>> context = {
-        ...     "quarter": "q4",
-        ...     "funnel_stage": "decision",
-        ...     "attribution_model": "multi_touch"
-        ... }
-        >>> result = adapter.calculate_score(event, context)
-        >>> print(f"Score: {result.score:.2f}, ROI: {adapter.get_roi(event, context):.2%}")
+    Evaluates campaign efficiency using inverse CPA as the primary signal.
+    Supports industry-aware benchmarks (D2C, B2B SaaS, marketplace) and
+    channel-specific baselines with seasonal factors.
     
     Attributes:
         CHANNEL_ADJUSTMENTS: Channel-specific target CPAs and typical CTRs
         SEASONAL_FACTORS: Quarterly performance adjustment factors
+        INDUSTRY_BENCHMARKS: Industry-specific benchmark overrides
     """
     
-    # Channel-specific performance benchmarks
-    # target_cpa: Expected cost per acquisition for the channel
-    # typical_ctr: Typical click-through rate for budget planning
     CHANNEL_ADJUSTMENTS: Dict[str, Dict[str, float]] = {
         "paid_search": {"target_cpa": 50, "typical_ctr": 0.03},
         "paid_social": {"target_cpa": 40, "typical_ctr": 0.01},
@@ -95,6 +72,36 @@ class CampaignAdapter(BaseDomainAdapter):
         "organic_search": {"target_cpa": 0, "typical_ctr": 0.05},
         "referral": {"target_cpa": 20, "typical_ctr": 0.04},
         "default": {"target_cpa": 50, "typical_ctr": 0.02}
+    }
+
+    INDUSTRY_BENCHMARKS: Dict[str, Dict[str, Dict[str, float]]] = {
+        "d2c": {
+            "paid_search": {"target_roas": 4.0, "target_cpa": 25, "typical_ctr": 0.04},
+            "paid_social": {"target_roas": 3.0, "target_cpa": 30, "typical_ctr": 0.015},
+            "display": {"target_roas": 2.0, "target_cpa": 45, "typical_ctr": 0.008},
+            "email": {"target_cpa": 5, "typical_ctr": 0.025},
+        },
+        "b2b_saas": {
+            "paid_search": {"target_cpa": 800, "target_cpl": 150, "typical_ctr": 0.025},
+            "paid_social": {"target_cpa": 1200, "target_cpl": 100, "typical_ctr": 0.008},
+            "display": {"target_cpa": 1500, "typical_ctr": 0.003},
+            "email": {"target_cpa": 200, "typical_ctr": 0.018},
+        },
+        "b2b_marketplace": {
+            "paid_search": {"target_cpa": 60, "typical_ctr": 0.035},
+            "paid_social": {"target_cpa": 45, "typical_ctr": 0.012},
+            "display": {"target_cpa": 90, "typical_ctr": 0.006},
+            "email": {"target_cpa": 15, "typical_ctr": 0.022},
+        },
+        "ecommerce": {
+            "paid_search": {"target_roas": 5.0, "target_cpa": 20, "typical_ctr": 0.045},
+            "paid_social": {"target_roas": 3.5, "target_cpa": 25, "typical_ctr": 0.018},
+            "email": {"target_cpa": 3, "typical_ctr": 0.03},
+        },
+        "fintech": {
+            "paid_search": {"target_cpa": 200, "typical_ctr": 0.02},
+            "paid_social": {"target_cpa": 150, "typical_ctr": 0.009},
+        },
     }
     
     # Seasonal performance factors by quarter
@@ -181,40 +188,34 @@ class CampaignAdapter(BaseDomainAdapter):
         """
         Calculate expected efficiency baseline for this campaign.
         
-        The baseline represents expected performance based on:
-        1. Channel-specific target CPA
-        2. Seasonal adjustment factors
-        3. Optional custom target override from context
-        
-        Formula:
-            Baseline = (1000 / target_cpa) * seasonal_factor
+        Incorporates industry-specific benchmarks when ``industry`` is
+        present in context. Falls back to generic CHANNEL_ADJUSTMENTS.
         
         Args:
-            event: Campaign event data containing:
-                - channel: Marketing channel (default: "default")
-            context: Additional context containing:
-                - target_cpa: Custom CPA target override (optional)
-                - quarter: Current quarter for seasonality (e.g., "q1")
+            event: Campaign event data (channel key)
+            context: Additional context (industry, target_cpa override, quarter)
         
         Returns:
             Float baseline representing expected efficiency
-        
-        Example:
-            >>> event = {"channel": "email"}
-            >>> context = {"quarter": "q4"}
-            >>> adapter.get_baseline(event, context)
-            115.0  # (1000/10) * 1.15 = 100 * 1.15
         """
         channel = event.get("channel", "default")
-        
-        # Get channel-specific target CPA
-        channel_config = self.CHANNEL_ADJUSTMENTS.get(
-            channel, 
-            self.CHANNEL_ADJUSTMENTS["default"]
-        )
-        target_cpa = channel_config["target_cpa"]
-        
-        # Allow context override for custom targets
+        industry = context.get("industry", "")
+
+        target_cpa = None
+
+        if industry and industry in self.INDUSTRY_BENCHMARKS:
+            industry_config = self.INDUSTRY_BENCHMARKS[industry]
+            channel_prefix = channel.split(".")[0] if "." in channel else channel
+            if channel_prefix in industry_config:
+                target_cpa = industry_config[channel_prefix].get("target_cpa")
+
+        if target_cpa is None:
+            channel_config = self.CHANNEL_ADJUSTMENTS.get(
+                channel,
+                self.CHANNEL_ADJUSTMENTS["default"]
+            )
+            target_cpa = channel_config["target_cpa"]
+
         if "target_cpa" in context:
             target_cpa = context["target_cpa"]
         

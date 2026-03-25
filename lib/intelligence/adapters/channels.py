@@ -222,6 +222,29 @@ def get_channels_for_domain(domain: Domain) -> List[ChannelConfig]:
     return [c for c in CHANNEL_REGISTRY.values() if c.domain == domain]
 
 
+BQ_CHANNEL_MAP: Dict[str, str] = {
+    "Google": "paid_search.google",
+    "Facebook": "paid_social.meta",
+    "Instagram": "paid_social.meta",
+    "TikTok": "paid_social.tiktok",
+    "Tiktok": "paid_social.tiktok",
+    "LinkedIn": "organic_social.linkedin",
+    "Reddit": "paid_social.meta",
+    "Twitter": "paid_social.meta",
+    "YouTube": "paid_social.meta",
+    "Bing": "paid_search.google",
+    "Email": "email.broadcast",
+    "SMS": "sms_push.promotional",
+    "Vibe": "landing_page",
+    "quora": "paid_social.meta",
+}
+
+
+def resolve_bq_channel(bq_channel: str) -> Optional[str]:
+    """Map a BigQuery channel name (e.g. 'Google') to a CHANNEL_REGISTRY ID."""
+    return BQ_CHANNEL_MAP.get(bq_channel)
+
+
 SKILL_CHANNEL_MAP: Dict[str, str] = {
     "email-copy-generator": "email.broadcast",
     "cohort-email-builder": "email.lifecycle",

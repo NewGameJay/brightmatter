@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BrightMatter — Live</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0e17;--surface:rgba(16,20,35,.92);--border:rgba(255,255,255,.06);--text:#ddd8e8;--dim:#5a5674;--accent:#7B68EE;--cyan:#2dd4a8;--coral:#f06868;--gold:#f0b060;--purple:#9580ff;--teal:#14b8a6;--orange:#f59e0b}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Outfit',sans-serif;overflow:hidden}
+.header{position:fixed;top:0;left:0;right:0;z-index:20;height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(11,14,23,.92);border-bottom:1px solid var(--border);backdrop-filter:blur(12px)}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.logo-name{font-weight:700;font-size:14px;letter-spacing:1.5px}
+.logo-tag{font-size:10px;color:var(--dim);font-family:'IBM Plex Mono',monospace}
+.refresh-info{font-size:9px;color:var(--dim);font-family:'IBM Plex Mono',monospace;text-align:right}
+.refresh-info .live{color:var(--cyan)}
+.stats{display:flex;gap:24px}
+.stat-val{font-weight:700;font-size:20px;font-family:'IBM Plex Mono',monospace;transition:color .3s}
+.stat-val.purple{color:var(--purple)}.stat-val.cyan{color:var(--cyan)}.stat-val.coral{color:var(--coral)}.stat-val.gold{color:var(--gold)}
+.stat-label{font-size:8px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase}
+.main{display:flex;height:100vh;padding-top:52px}
+.graph-area{flex:1;position:relative}
+#graph{width:100%;height:100%}
+.sidebar{width:290px;border-left:1px solid var(--border);background:var(--surface);overflow-y:auto;padding:16px;flex-shrink:0;scrollbar-width:thin;scrollbar-color:rgba(123,104,238,.2) transparent}
+.section{margin-bottom:20px}
+.section-title{font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.bar-row{display:flex;align-items:center;gap:6px;padding:3px 0}
+.bar-label{font-size:10px;color:var(--text);width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'IBM Plex Mono',monospace}
+.bar-track{flex:1;height:5px;background:rgba(255,255,255,.04);border-radius:3px;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.22,1,.36,1)}
+.bar-value{font-size:10px;color:var(--dim);width:36px;text-align:right;font-family:'IBM Plex Mono',monospace}
+.domain-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.domain-dot{width:7px;height:7px;border-radius:50%}
+.domain-name{flex:1;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim)}
+.domain-n{font-size:12px;font-weight:600;font-family:'IBM Plex Mono',monospace;transition:all .4s}
+.stream-row{padding:6px 0;border-bottom:1px solid var(--border)}
+.stream-row:last-child{border-bottom:none}
+.stream-name{font-size:10px;font-weight:600;letter-spacing:1px;color:var(--cyan)}
+.stream-name::before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--cyan);margin-right:5px;box-shadow:0 0 4px var(--cyan)}
+.stream-time{font-size:9px;color:var(--dim);margin-top:1px;font-family:'IBM Plex Mono',monospace}
+.feed-panel{position:fixed;top:52px;left:0;width:340px;bottom:0;z-index:15;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.feed-header{padding:12px 16px 8px;font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between}
+.feed-header-left{display:flex;align-items:center;gap:6px}
+.feed-header .live-dot{width:5px;height:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);animation:blink 2s ease-in-out infinite}
+.feed-header .last-ts{font-size:8px;color:var(--dim);font-family:'IBM Plex Mono',monospace;letter-spacing:0;text-transform:none;font-weight:400}
+.time-divider{padding:4px 16px;font-size:8px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);background:rgba(255,255,255,.015);border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;position:sticky;top:0;z-index:2}
+.time-divider.recent{color:var(--cyan)}
+.feed-scroll{flex:1;overflow-y:auto;padding:4px 0;scrollbar-width:thin;scrollbar-color:rgba(123,104,238,.2) transparent}
+.feed-item{padding:8px 16px;border-bottom:1px solid rgba(255,255,255,.02);transition:background .15s,opacity .4s,max-height .4s;max-height:120px;overflow:hidden}
+.feed-item:hover{background:rgba(255,255,255,.02)}
+.feed-item.new-item{animation:slideIn .4s ease-out}
+@keyframes slideIn{from{opacity:0;max-height:0;padding-top:0;padding-bottom:0}to{opacity:1;max-height:120px;padding-top:8px;padding-bottom:8px}}
+.feed-time{font-size:8px;color:rgba(90,86,116,.6);font-family:'IBM Plex Mono',monospace;margin-bottom:2px}
+.feed-text{font-size:11px;line-height:1.45;color:var(--text)}
+.feed-detail{font-size:9px;color:var(--dim);margin-top:2px;font-family:'IBM Plex Mono',monospace}
+.feed-icon{display:inline-block;width:14px;font-size:11px;text-align:center;margin-right:4px;flex-shrink:0}
+.feed-icon.cyan{color:var(--cyan)}.feed-icon.purple{color:var(--purple)}.feed-icon.gold{color:var(--gold)}.feed-icon.coral{color:var(--coral)}.feed-icon.teal{color:var(--teal)}.feed-icon.orange{color:var(--orange)}
+.legend-box{position:fixed;bottom:12px;left:352px;z-index:20;display:flex;gap:14px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px 12px;backdrop-filter:blur(10px)}
+.leg-item{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--dim)}
+.leg-circle{border-radius:50%}
+.leg-diamond{transform:rotate(45deg);border-radius:1px}
+.tooltip{position:fixed;z-index:30;pointer-events:none;opacity:0;transition:opacity .12s;background:rgba(11,14,23,.95);border:1px solid var(--border);border-radius:6px;padding:8px 12px;backdrop-filter:blur(10px);max-width:260px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.tooltip.show{opacity:1}
+.tt-title{font-weight:600;font-size:11px;margin-bottom:3px}
+.tt-row{font-size:9px;color:var(--dim);line-height:1.6;font-family:'IBM Plex Mono',monospace}
+.tt-row span{color:var(--text)}
+#loading{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;transition:opacity .5s}
+#loading.done{opacity:0;pointer-events:none}
+#loading .spinner{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div><div style="font-size:11px;color:var(--dim);letter-spacing:2px">QUERYING SUPABASE</div></div>
+<div class="header">
+  <div class="logo"><div class="logo-dot"></div><span class="logo-name">BRIGHTMATTER</span><span class="logo-tag">live</span></div>
+  <div class="stats" id="stats"></div>
+  <div class="refresh-info"><span class="live">LIVE</span> &mdash; auto-refresh 10s<br><span id="last-update"></span></div>
+</div>
+<div class="feed-panel" id="feed-panel">
+  <div class="feed-header"><div class="feed-header-left"><div class="live-dot"></div>ACTIVITY FEED</div><span class="last-ts" id="feed-last-ts"></span></div>
+  <div class="feed-scroll" id="feed-scroll"></div>
+</div>
+<div class="main" style="padding-left:340px">
+  <div class="graph-area"><svg id="graph"></svg></div>
+  <div class="sidebar" id="sidebar"></div>
+</div>
+<div class="legend-box">
+  <div class="leg-item"><div class="leg-circle" style="width:12px;height:12px;background:var(--accent)"></div>Domain</div>
+  <div class="leg-item"><div class="leg-circle" style="width:9px;height:9px;background:var(--cyan)"></div>Skill</div>
+  <div class="leg-item"><div class="leg-diamond" style="width:7px;height:7px;background:var(--gold)"></div>Pattern</div>
+  <div class="leg-item"><div class="leg-circle" style="width:5px;height:5px;border:1.5px solid var(--cyan);background:transparent"></div>Guidance</div>
+</div>
+<div class="tooltip" id="tooltip"><div class="tt-title" id="tt-title"></div><div id="tt-body"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+const API_BASE = window.location.origin;
+const domColors = {generic:'#7B68EE',campaign:'#f06868',revenue:'#2dd4a8',content:'#f0b060'};
+
+let simulation = null;
+let firstLoad = true;
+let graphGroup = null;
+let svgEl = null;
+let currentNodes = [];
+let currentLinks = [];
+let nodeById = {};
+let linkSel, nodeSel;
+let graphW = 0, graphH = 0;
+
+async function fetchAll() {
+  const r = await fetch(API_BASE + '/api/v1/dashboard/data');
+  if (!r.ok) throw new Error('API ' + r.status);
+  return r.json();
+}
+
+function buildGraph(data) {
+  const nodes = [], edges = [], idx = {};
+  Object.entries(data.domain_dist).forEach(([d,count]) => {
+    const id='domain-'+d;
+    nodes.push({id,type:'domain',label:d.toUpperCase(),count,color:domColors[d]||'#888',r:12+Math.sqrt(count)*2});
+    idx[id]=true;
+  });
+  const sorted = Object.entries(data.skill_dist).sort((a,b)=>b[1]-a[1]);
+  sorted.forEach(([skill,count],i) => {
+    const id='skill-'+skill, hue=(i*37+180)%360;
+    nodes.push({id,type:'skill',label:skill,count,color:`hsl(${hue},65%,58%)`,r:4+Math.sqrt(count)*1.4});
+    idx[id]=true;
+    const ep = data.episodes.find(e=>e.skill_name===skill);
+    const dom = ep?ep.domain||'generic':'generic';
+    const did='domain-'+dom;
+    if(idx[did])edges.push({source:id,target:did,weight:count});
+  });
+  const seenP = new Set();
+  data.patterns.forEach(p => {
+    const id='pattern-'+(p.pattern_id||'').slice(0,30);
+    if(seenP.has(id))return; seenP.add(id);
+    const conf=p.confidence||0;
+    nodes.push({id,type:'pattern',label:(p.pattern_id||'').slice(0,20),confidence:conf,evidence:p.evidence_count,successes:p.successes,failures:p.failures,skill:p.skill_name,domain:p.domain,r:3+conf*3});
+    idx[id]=true;
+    const sid='skill-'+p.skill_name;
+    if(idx[sid])edges.push({source:id,target:sid,weight:conf*3});
+  });
+  data.guidance.forEach(g => {
+    const id='guidance-'+g.skill_name+'-'+(g.client_id||'');
+    nodes.push({id,type:'guidance',label:'G:'+g.skill_name,confidence:g.confidence||0,r:2.5});
+    idx[id]=true;
+    const sid='skill-'+g.skill_name;
+    if(idx[sid])edges.push({source:id,target:sid,weight:1});
+  });
+  const seen=new Set();
+  return {nodes,edges:edges.filter(e=>{const k=e.source+'>'+e.target;if(seen.has(k))return false;seen.add(k);return true})};
+}
+
+function initGraph() {
+  svgEl = d3.select('#graph');
+  const ct = svgEl.node().parentElement;
+  graphW = ct.clientWidth;
+  graphH = ct.clientHeight;
+  svgEl.attr('width', graphW).attr('height', graphH);
+
+  const defs = svgEl.append('defs');
+  const glow = defs.append('filter').attr('id','glow');
+  glow.append('feGaussianBlur').attr('stdDeviation','2.5').attr('result','blur');
+  const mg = glow.append('feMerge');
+  mg.append('feMergeNode').attr('in','blur');
+  mg.append('feMergeNode').attr('in','SourceGraphic');
+
+  graphGroup = svgEl.append('g');
+  graphGroup.append('g').attr('class','links-layer');
+  graphGroup.append('g').attr('class','nodes-layer');
+
+  svgEl.call(d3.zoom().scaleExtent([.3,5]).on('zoom', e => graphGroup.attr('transform', e.transform)));
+}
+
+function updateGraph(gd) {
+  const newNodeMap = {};
+  gd.nodes.forEach(n => { newNodeMap[n.id] = n; });
+
+  currentNodes.forEach(n => {
+    const upd = newNodeMap[n.id];
+    if (upd) {
+      n.r = upd.r;
+      n.count = upd.count;
+      n.confidence = upd.confidence;
+      n.evidence = upd.evidence;
+      n.successes = upd.successes;
+      n.failures = upd.failures;
+      n.color = upd.color;
+      n.label = upd.label;
+    }
+  });
+
+  const existingIds = new Set(currentNodes.map(n => n.id));
+  const added = [];
+  gd.nodes.forEach(n => {
+    if (!existingIds.has(n.id)) {
+      n.x = graphW / 2 + (Math.random() - .5) * 80;
+      n.y = graphH / 2 + (Math.random() - .5) * 80;
+      currentNodes.push(n);
+      added.push(n.id);
+    }
+  });
+
+  const keepIds = new Set(gd.nodes.map(n => n.id));
+  for (let i = currentNodes.length - 1; i >= 0; i--) {
+    if (!keepIds.has(currentNodes[i].id)) currentNodes.splice(i, 1);
+  }
+
+  nodeById = {};
+  currentNodes.forEach(n => { nodeById[n.id] = n; });
+
+  const linkKey = l => (typeof l.source === 'object' ? l.source.id : l.source) + '>' + (typeof l.target === 'object' ? l.target.id : l.target);
+  const existingLinkKeys = new Set(currentLinks.map(linkKey));
+
+  gd.edges.forEach(e => {
+    const k = e.source + '>' + e.target;
+    if (!existingLinkKeys.has(k) && nodeById[e.source] && nodeById[e.target]) {
+      currentLinks.push({source: e.source, target: e.target, weight: e.weight});
+    }
+  });
+  const newLinkKeys = new Set(gd.edges.map(e => e.source + '>' + e.target));
+  for (let i = currentLinks.length - 1; i >= 0; i--) {
+    if (!newLinkKeys.has(linkKey(currentLinks[i]))) currentLinks.splice(i, 1);
+  }
+
+  const linksLayer = graphGroup.select('.links-layer');
+  linkSel = linksLayer.selectAll('line').data(currentLinks, linkKey);
+  linkSel.exit().transition().duration(300).attr('stroke-opacity', 0).remove();
+  const linkEnter = linkSel.enter().append('line')
+    .attr('stroke-opacity', 0);
+  linkSel = linkEnter.merge(linkSel);
+  linkSel.transition().duration(600)
+    .attr('stroke', d => {const s = typeof d.source === 'object' ? d.source : nodeById[d.source]; return s ? (s.color || '#444') : '#333';})
+    .attr('stroke-opacity', d => Math.min(.07 + d.weight * .003, .22))
+    .attr('stroke-width', d => Math.max(.5, Math.min(d.weight * .04, 2.5)));
+
+  const nodesLayer = graphGroup.select('.nodes-layer');
+  nodeSel = nodesLayer.selectAll('g.node').data(currentNodes, d => d.id);
+  nodeSel.exit().transition().duration(300).attr('opacity', 0).remove();
+
+  const nodeEnter = nodeSel.enter().append('g').attr('class', 'node').attr('cursor', 'pointer').attr('opacity', 0);
+
+  nodeEnter.each(function(d) {
+    const g = d3.select(this);
+    if (d.type === 'domain') {
+      g.append('circle').attr('class','halo').attr('fill','none').attr('stroke-width',1).attr('stroke-opacity',.2);
+      g.append('circle').attr('class','body').attr('fill-opacity',.85).attr('filter','url(#glow)');
+      g.append('text').attr('class','lbl').attr('text-anchor','middle').attr('font-size','10px').attr('font-weight','600').attr('letter-spacing','1.5px').attr('font-family','Outfit');
+    } else if (d.type === 'skill') {
+      g.append('circle').attr('class','body').attr('fill-opacity',.75);
+      g.append('text').attr('class','lbl').attr('text-anchor','start').attr('font-size','8px').attr('fill','rgba(255,255,255,.4)').attr('font-family','IBM Plex Mono');
+    } else if (d.type === 'pattern') {
+      g.append('rect').attr('class','body').attr('rx',1).attr('transform','rotate(45)');
+    } else {
+      g.append('circle').attr('class','body').attr('fill','transparent').attr('stroke','#2dd4a8').attr('stroke-width',1).attr('stroke-opacity',.45);
+    }
+  });
+
+  nodeEnter.transition().duration(500).attr('opacity', 1);
+
+  nodeSel = nodeEnter.merge(nodeSel);
+
+  nodeSel.each(function(d) {
+    const g = d3.select(this);
+    if (d.type === 'domain') {
+      g.select('circle.halo').transition().duration(600).attr('r', d.r + 4).attr('stroke', d.color);
+      g.select('circle.body').transition().duration(600).attr('r', d.r).attr('fill', d.color);
+      g.select('text.lbl').text(d.label).transition().duration(600).attr('dy', d.r + 13).attr('fill', d.color);
+    } else if (d.type === 'skill') {
+      g.select('circle.body').transition().duration(600).attr('r', d.r).attr('fill', d.color);
+      const topSkills = new Set(currentNodes.filter(n => n.type === 'skill').sort((a,b) => (b.count||0) - (a.count||0)).slice(0,10).map(n => n.id));
+      g.select('text.lbl').text(topSkills.has(d.id) ? d.label : '').transition().duration(600).attr('dx', d.r + 3).attr('dy', 3);
+    } else if (d.type === 'pattern') {
+      const c = d.confidence || .5;
+      const fill = c > .8 ? '#2dd4a8' : c > .6 ? '#f0b060' : '#f06868';
+      g.select('rect.body').transition().duration(600)
+        .attr('width', d.r * 1.4).attr('height', d.r * 1.4)
+        .attr('x', -d.r * .7).attr('y', -d.r * .7)
+        .attr('fill', fill).attr('fill-opacity', .5 + c * .4);
+    } else {
+      g.select('circle.body').transition().duration(600).attr('r', d.r);
+    }
+  });
+
+  nodeSel.call(d3.drag()
+    .on('start', (e,d) => { if(!e.active) simulation.alphaTarget(.15).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag', (e,d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end', (e,d) => { if(!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+  );
+
+  const tooltip = document.getElementById('tooltip'), ttT = document.getElementById('tt-title'), ttB = document.getElementById('tt-body');
+  nodeSel.on('mouseenter', (e,d) => {
+    tooltip.classList.add('show');
+    ttT.textContent = d.label;
+    ttT.style.color = d.color || 'var(--text)';
+    let b = `<div class="tt-row">Type: <span>${d.type}</span></div>`;
+    if (d.count != null) b += `<div class="tt-row">Episodes: <span>${d.count}</span></div>`;
+    if (d.confidence != null) b += `<div class="tt-row">Confidence: <span>${(d.confidence*100).toFixed(1)}%</span></div>`;
+    if (d.evidence != null) b += `<div class="tt-row">Evidence: <span>${d.evidence}</span></div>`;
+    if (d.successes != null) b += `<div class="tt-row">Success/Fail: <span>${d.successes}/${d.failures||0}</span></div>`;
+    if (d.skill) b += `<div class="tt-row">Skill: <span>${d.skill}</span></div>`;
+    if (d.domain) b += `<div class="tt-row">Domain: <span>${d.domain}</span></div>`;
+    const cn = currentLinks.filter(l => (l.source.id||l.source)===d.id || (l.target.id||l.target)===d.id);
+    b += `<div class="tt-row">Connections: <span>${cn.length}</span></div>`;
+    ttB.innerHTML = b;
+    const ids = new Set(); cn.forEach(l => { ids.add(l.source.id||l.source); ids.add(l.target.id||l.target); });
+    nodeSel.transition().duration(150).style('opacity', n => ids.has(n.id) || n.id === d.id ? 1 : .08);
+    linkSel.transition().duration(150).style('stroke-opacity', l => ((l.source.id||l.source)===d.id || (l.target.id||l.target)===d.id) ? .5 : .015);
+  }).on('mousemove', e => {
+    tooltip.style.left = (e.clientX+12)+'px';
+    tooltip.style.top = (e.clientY-6)+'px';
+  }).on('mouseleave', () => {
+    tooltip.classList.remove('show');
+    nodeSel.transition().duration(200).style('opacity', 1);
+    linkSel.transition().duration(200).style('stroke-opacity', d => Math.min(.07 + d.weight * .003, .22));
+  });
+
+  if (!simulation) {
+    simulation = d3.forceSimulation(currentNodes)
+      .force('link', d3.forceLink(currentLinks).id(d => d.id)
+        .distance(d => { const s = typeof d.source === 'object' ? d.source : nodeById[d.source]; return !s ? 80 : s.type === 'domain' ? 130 : s.type === 'pattern' ? 35 : 65; })
+        .strength(d => { const s = typeof d.source === 'object' ? d.source : nodeById[d.source]; return s && s.type === 'domain' ? .12 : .4; }))
+      .force('charge', d3.forceManyBody().strength(d => d.type === 'domain' ? -700 : d.type === 'skill' ? -180 : d.type === 'pattern' ? -50 : -25))
+      .force('center', d3.forceCenter(graphW / 2, graphH / 2))
+      .force('collision', d3.forceCollide().radius(d => d.r + 2))
+      .force('x', d3.forceX(graphW / 2).strength(.04))
+      .force('y', d3.forceY(graphH / 2).strength(.04))
+      .on('tick', tick);
+  } else {
+    simulation.nodes(currentNodes);
+    simulation.force('link').links(currentLinks);
+    if (added.length > 0) {
+      simulation.alpha(.15).restart();
+    }
+  }
+}
+
+function tick() {
+  if (linkSel) linkSel.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  if (nodeSel) nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+function renderStats(d) {
+  const items = [
+    {v:d.episodes.length, l:'Episodes', c:'purple'},
+    {v:d.patterns.length, l:'Patterns', c:'cyan'},
+    {v:Object.keys(d.skill_dist).length, l:'Skills', c:'gold'},
+    {v:(d.avg_confidence*100).toFixed(0)+'%', l:'Avg Conf', c:'coral'},
+    {v:d.guidance.length, l:'Guidance', c:'purple'},
+    {v:d.signal_count, l:'Signals', c:'cyan'},
+    {v:d.event_count, l:'Events', c:'gold'}
+  ];
+  const el = document.getElementById('stats');
+  if (!el.children.length) {
+    items.forEach(s => {
+      const x = document.createElement('div');
+      x.innerHTML = `<div class="stat-val ${s.c}" data-stat="${s.l}">${s.v}</div><div class="stat-label">${s.l}</div>`;
+      el.appendChild(x);
+    });
+  } else {
+    items.forEach(s => {
+      const val = el.querySelector(`[data-stat="${s.l}"]`);
+      if (val && val.textContent !== String(s.v)) {
+        val.textContent = s.v;
+        val.style.textShadow = `0 0 8px currentColor`;
+        setTimeout(() => { val.style.textShadow = 'none'; }, 600);
+      }
+    });
+  }
+}
+
+function renderSidebar(d) {
+  let h = '<div class="section"><div class="section-title">Patterns (top confidence)</div>';
+  const seen = new Set();
+  [...d.patterns].sort((a,b) => (b.confidence||0) - (a.confidence||0)).filter(p => { if(seen.has(p.skill_name)) return false; seen.add(p.skill_name); return true; }).slice(0,12).forEach(p => {
+    const pct = ((p.confidence||0)*100).toFixed(0);
+    const clr = p.confidence > .8 ? 'var(--cyan)' : p.confidence > .6 ? 'var(--gold)' : 'var(--coral)';
+    h += `<div class="bar-row"><div class="bar-label" title="${p.skill_name}">${p.skill_name}</div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${clr}"></div></div><div class="bar-value">${pct}%</div></div>`;
+  });
+  h += '</div><div class="section"><div class="section-title">Domains</div>';
+  Object.entries(d.domain_dist).sort((a,b) => b[1] - a[1]).forEach(([k,n]) => {
+    h += `<div class="domain-row"><div class="domain-dot" style="background:${domColors[k]||'#888'}"></div><div class="domain-name">${k}</div><div class="domain-n">${n}</div></div>`;
+  });
+  h += '</div><div class="section"><div class="section-title">Episodes per Skill</div>';
+  const sortedSkills = Object.entries(d.skill_dist).sort((a,b) => b[1] - a[1]);
+  const mx = sortedSkills.length ? sortedSkills[0][1] : 1;
+  sortedSkills.forEach(([s,n]) => {
+    h += `<div class="bar-row"><div class="bar-label" title="${s}">${s}</div><div class="bar-track"><div class="bar-fill" style="width:${(n/mx*100).toFixed(0)}%;background:var(--cyan)"></div></div><div class="bar-value">${n}</div></div>`;
+  });
+  h += '</div><div class="section"><div class="section-title">Data Streams</div>';
+  d.watermarks.forEach(w => {
+    const t = w.last_processed_at ? new Date(w.last_processed_at).toLocaleString() : 'never';
+    h += `<div class="stream-row"><div class="stream-name">${(w.source||'').toUpperCase()}</div><div class="stream-time">Last sync: ${t}</div></div>`;
+  });
+  h += '</div>';
+  document.getElementById('sidebar').innerHTML = h;
+}
+
+const ICONS = {bolt:'\u26A1',brain:'\uD83E\uDDE0',sparkle:'\u2728',signal:'\uD83D\uDCE1',sync:'\uD83D\uDD04',robot:'\uD83E\uDD16',compass:'\uD83E\uDDED',mic:'\uD83C\uDF99\uFE0F',link:'\uD83D\uDD17'};
+
+const EST_FMT = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true};
+const EST_DATE_FMT = {timeZone:'America/New_York',month:'short',day:'numeric'};
+const EST_FULL = {timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,month:'short',day:'numeric'};
+
+function toEST(iso) { return iso ? new Date(iso).toLocaleTimeString('en-US', EST_FMT) : ''; }
+function toESTFull(iso) { return iso ? new Date(iso).toLocaleString('en-US', EST_FULL) : ''; }
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function timeGroup(iso) {
+  if (!iso) return 'unknown';
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 300) return 'just now';
+  if (diff < 3600) return 'minutes ago';
+  if (diff < 7200) return '1 hour ago';
+  if (diff < 86400) return Math.floor(diff/3600) + ' hours ago';
+  if (diff < 172800) return 'yesterday';
+  return Math.floor(diff/86400) + ' days ago';
+}
+
+function renderFeed(feed) {
+  const el = document.getElementById('feed-scroll');
+
+  if (feed.length > 0) {
+    const latest = feed[0].ts;
+    const tsEl = document.getElementById('feed-last-ts');
+    if (tsEl && latest) {
+      tsEl.textContent = toESTFull(latest) + ' ET';
+    }
+  }
+
+  let html = '';
+  let lastGroup = '';
+  feed.forEach(f => {
+    const grp = timeGroup(f.ts);
+    if (grp !== lastGroup) {
+      const isRecent = grp === 'just now' || grp === 'minutes ago';
+      html += `<div class="time-divider${isRecent ? ' recent' : ''}">${grp}</div>`;
+      lastGroup = grp;
+    }
+    const d = f.ts ? new Date(f.ts) : null;
+    const absTime = d ? toEST(f.ts) : '';
+    html += `<div class="feed-item"><div class="feed-time">${absTime} · ${timeAgo(f.ts)}</div><div class="feed-text"><span class="feed-icon ${f.color}">${ICONS[f.icon]||'\u25CF'}</span>${f.text}</div>${f.detail?`<div class="feed-detail">${f.detail}</div>`:''}</div>`;
+  });
+  el.innerHTML = html;
+}
+
+async function fetchFeed() {
+  try {
+    const r = await fetch(API_BASE + '/api/v1/dashboard/feed?limit=60');
+    if (!r.ok) return;
+    const feed = await r.json();
+    renderFeed(feed);
+  } catch(e) { console.error('Feed fetch failed:', e); }
+}
+
+async function refresh() {
+  try {
+    const [data] = await Promise.all([fetchAll(), fetchFeed()]);
+    renderStats(data);
+    renderSidebar(data);
+    const graph = buildGraph(data);
+    if (!graphGroup) initGraph();
+    updateGraph(graph);
+    if (firstLoad) { document.getElementById('loading').classList.add('done'); firstLoad = false; }
+    document.getElementById('last-update').textContent = new Date().toLocaleString('en-US', EST_FULL) + ' ET';
+  } catch(err) { console.error('Refresh failed:', err); }
+}
+
+refresh();
+setInterval(refresh, 10000);
+window.addEventListener('resize', () => {
+  if (!firstLoad && svgEl) {
+    const ct = svgEl.node().parentElement;
+    graphW = ct.clientWidth;
+    graphH = ct.clientHeight;
+    svgEl.attr('width', graphW).attr('height', graphH);
+    if (simulation) {
+      simulation.force('center', d3.forceCenter(graphW/2, graphH/2));
+      simulation.force('x', d3.forceX(graphW/2).strength(.04));
+      simulation.force('y', d3.forceY(graphH/2).strength(.04));
+      simulation.alpha(.1).restart();
+    }
+  }
+});
+</script>
+</body>
+</html>

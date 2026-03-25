@@ -192,6 +192,16 @@ class MemoryConsolidationManager:
                     f"created={stats['patterns_created']}, updated={stats['patterns_updated']}"
                 )
                 
+                # Step 2.5: Validate patterns against reference_knowledge
+                logger.info("[CONSOLIDATION] Step 2.5: Validating patterns against expert rules")
+                try:
+                    validation_stats = self._validate_patterns_against_reference()
+                    stats["patterns_flagged"] = validation_stats.get("flagged", 0)
+                    stats["patterns_demoted"] = validation_stats.get("demoted", 0)
+                    logger.info(f"[CONSOLIDATION] Step 2.5 DONE: {validation_stats}")
+                except Exception as e:
+                    logger.debug(f"[CONSOLIDATION] Step 2.5 skipped: {e}")
+
                 # Step 3: Archive stale semantic patterns
                 logger.info("[CONSOLIDATION] Step 3: Archiving stale semantic patterns")
                 if hasattr(self._semantic, 'forget_stale_patterns'):
@@ -1394,6 +1404,120 @@ class MemoryConsolidationManager:
             logger.debug(f"Error evaluating skill sequence: {e}")
 
         return created_count
+
+
+    # ── Reference knowledge validation ───────────────────────────────
+
+    def _validate_patterns_against_reference(self) -> Dict[str, int]:
+        """Check recently updated patterns against expert instant_fail rules.
+
+        Queries reference_knowledge for expert-panel rows with instant_fail_rules,
+        then checks each recently updated high-confidence pattern's recommendation
+        against those rules.  Patterns that trigger an instant_fail get their
+        confidence reduced and a flag added to their metadata.
+
+        Returns dict with flagged/demoted counts.
+        """
+        stats = {"flagged": 0, "demoted": 0}
+
+        try:
+            from lib.supabase_client import get_supabase_or_none
+        except ImportError:
+            return stats
+
+        db = get_supabase_or_none()
+        if db is None:
+            return stats
+
+        try:
+            ref_result = (
+                db.table("reference_knowledge")
+                .select("title,content,tags,expert_handle")
+                .eq("source", "expert-panel")
+                .execute()
+            )
+        except Exception:
+            return stats
+
+        expert_rows = ref_result.data or []
+        if not expert_rows:
+            return stats
+
+        all_rules: List[Dict[str, Any]] = []
+        for row in expert_rows:
+            content = row.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            rules = content.get("instant_fail_rules", [])
+            tags = row.get("tags", [])
+            for rule in rules:
+                if isinstance(rule, dict) and rule.get("rule"):
+                    all_rules.append({
+                        "expert": row.get("expert_handle", ""),
+                        "component": rule.get("component", ""),
+                        "rule": rule["rule"],
+                        "tags": tags,
+                    })
+
+        if not all_rules:
+            return stats
+
+        try:
+            if hasattr(self._semantic, "get_high_confidence_patterns"):
+                patterns = self._semantic.get_high_confidence_patterns(min_confidence=0.6)
+            elif hasattr(self._semantic, "get_all_patterns"):
+                all_pats = self._semantic.get_all_patterns()
+                patterns = [p for p in all_pats if p.confidence >= 0.6]
+            else:
+                return stats
+        except Exception:
+            return stats
+
+        for pattern in patterns:
+            pat_tags = set()
+            for k, v in (pattern.condition or {}).items():
+                if isinstance(v, str):
+                    pat_tags.add(v.lower())
+            if hasattr(pattern, "skill_name") and pattern.skill_name:
+                pat_tags.update(pattern.skill_name.lower().replace(":", " ").split())
+
+            for rule in all_rules:
+                rule_tags = set(t.lower() for t in (rule.get("tags") or []))
+                if not rule_tags or rule_tags & pat_tags:
+                    rule_text = rule["rule"].lower()
+                    rec = pattern.recommendation or {}
+                    rec_text = json.dumps(rec, default=str).lower()
+
+                    triggered = False
+                    if "wrong desire" in rule_text and "desire" not in rec_text:
+                        pass
+                    elif "leading with product" in rule_text and rec.get("funnel_stage") == "unaware":
+                        triggered = True
+                    elif "product mention in the first 25%" in rule_text:
+                        pass
+
+                    if triggered:
+                        stats["flagged"] += 1
+                        original_conf = pattern.confidence
+                        pattern.confidence = max(0.1, pattern.confidence * 0.5)
+                        if not hasattr(pattern, "metadata") or pattern.metadata is None:
+                            pattern.metadata = {}
+                        pattern.metadata["instant_fail_triggered"] = {
+                            "expert": rule["expert"],
+                            "component": rule["component"],
+                            "rule": rule["rule"][:120],
+                            "original_confidence": original_conf,
+                        }
+                        stats["demoted"] += 1
+
+                        if hasattr(self._semantic, "_persist_pattern"):
+                            try:
+                                self._semantic._persist_pattern(pattern, "")
+                            except Exception:
+                                pass
+                        break
+
+        return stats
 
 
 __all__ = [

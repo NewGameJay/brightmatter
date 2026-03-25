@@ -315,3 +315,39 @@ CREATE TABLE IF NOT EXISTS bm_watermarks (
 
 CREATE INDEX IF NOT EXISTS idx_bm_watermarks_source
   ON bm_watermarks(source);
+
+-- ── Reference Knowledge ────────────────────────────────────────────
+-- Curated expert frameworks, tactics, ad examples, benchmarks, and
+-- course material from DTC-OS and other sources.  BrightMatter queries
+-- this at guidance-time and consolidation-time — never double-stored
+-- as episodic memory.
+
+CREATE TABLE IF NOT EXISTS reference_knowledge (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source TEXT NOT NULL,          -- expert-panel | tactics-vault | ad-vault | mkt1-templates | b2c-courses | dtc-benchmarks
+  category TEXT NOT NULL,        -- persuasion | advertising | positioning | growth | cro | analytics | retention | strategy
+  title TEXT NOT NULL,
+  summary TEXT,                  -- 200-char human summary
+  content JSONB NOT NULL DEFAULT '{}',  -- full structured data
+  tags TEXT[] DEFAULT '{}',      -- e.g. ["meta-ads", "creative-testing", "roas"]
+  levers TEXT[] DEFAULT '{}',    -- driver-tree nodes: ["CVR", "AOV", "Sessions"]
+  expert_handle TEXT,            -- schwartz, ogilvy, dunford, kaushik, etc.
+  confidence_weight FLOAT DEFAULT 0.7,  -- 1.0 = peer-reviewed, 0.7 = practitioner, 0.5 = anecdotal
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_refknow_source
+  ON reference_knowledge(source);
+
+CREATE INDEX IF NOT EXISTS idx_refknow_category
+  ON reference_knowledge(category);
+
+CREATE INDEX IF NOT EXISTS idx_refknow_tags
+  ON reference_knowledge USING GIN(tags);
+
+CREATE INDEX IF NOT EXISTS idx_refknow_levers
+  ON reference_knowledge USING GIN(levers);
+
+CREATE INDEX IF NOT EXISTS idx_refknow_expert
+  ON reference_knowledge(expert_handle)
+  WHERE expert_handle IS NOT NULL;

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ..types import Domain, SemanticPattern, ProceduralKnowledge
+from ..adapters.channels import get_channel_config, ChannelConfig
 
 if TYPE_CHECKING:
     from ..memory.semantic import SemanticMemoryStore
@@ -47,7 +48,20 @@ class Guidance:
     predicted_baseline: Optional[float] = None
     pattern_expected_value: Optional[float] = None
     context_matched: Dict[str, Any] = field(default_factory=dict)
-    
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def expected_signal(self) -> float:
+        if self.predicted_outcome is not None:
+            return self.predicted_outcome
+        if self.pattern_expected_value is not None:
+            return self.pattern_expected_value
+        return 0.5
+
+    @property
+    def expected_baseline(self) -> float:
+        return self.predicted_baseline if self.predicted_baseline is not None else 1.0
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "parameters": self.parameters,
@@ -62,6 +76,7 @@ class Guidance:
             "predicted_baseline": self.predicted_baseline,
             "pattern_expected_value": self.pattern_expected_value,
             "context_matched": self.context_matched,
+            "metadata": self.metadata,
         }
     
     @classmethod
@@ -168,7 +183,7 @@ class Predictor:
         logger.debug(f"Getting guidance for {skill_name} in domain {domain.value}")
         
         # Step 1: Retrieve relevant patterns from semantic memory
-        patterns = self._retrieve_patterns(skill_name, tenant_id, domain)
+        patterns = self._retrieve_patterns(skill_name, tenant_id, domain, context)
         
         # Step 2: Get procedural knowledge for this skill/domain
         procedural = self._retrieve_procedural(skill_name, domain)
@@ -201,7 +216,17 @@ class Predictor:
             guidance.confidence = min(1.0, guidance.confidence + 0.1)
             guidance.uncertainty = max(0.0, guidance.uncertainty - 0.1)
 
-        # Step 6: Incorporate upstream strategy context
+        # Step 6: Enrich with reference knowledge (expert frameworks, tactics)
+        try:
+            ref_enrichments = self._enrich_with_reference_knowledge(
+                skill_name, domain, context, guidance
+            )
+            if ref_enrichments:
+                guidance.metadata["reference_knowledge"] = ref_enrichments
+        except Exception as e:
+            logger.debug(f"Reference knowledge enrichment skipped: {e}")
+
+        # Step 7: Incorporate upstream strategy context
         # When upstream strategy skills have completed (e.g., positioning-angles
         # before email-sequences), their outputs inform this skill's parameters.
         # This closes the feedback loop: strategy → execution → learning.
@@ -223,15 +248,26 @@ class Predictor:
         self,
         skill_name: str,
         tenant_id: str,
-        domain: Domain
+        domain: Domain,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[SemanticPattern]:
-        """Retrieve relevant semantic patterns for the skill."""
+        """Retrieve relevant semantic patterns, filtering by min_sample_size."""
         try:
-            return self._semantic_store.retrieve_patterns(
+            patterns = self._semantic_store.retrieve_patterns(
                 skill_name=skill_name,
                 domain=domain,
                 tenant_id=tenant_id,
             )
+            channel_id = (context or {}).get("channel_id", "")
+            cc = get_channel_config(channel_id) if channel_id else None
+            min_samples = cc.min_sample_size if cc else 0
+
+            if min_samples > 0:
+                patterns = [
+                    p for p in patterns
+                    if p.recommendation.get("sample_count", p.evidence_count) >= min_samples
+                ]
+            return patterns
         except Exception as e:
             logger.warning(f"Failed to retrieve patterns: {e}")
         return []
@@ -703,51 +739,105 @@ class Predictor:
 
         return adjustments
 
+    _IDENTITY_KEYS = frozenset({
+        "client_id", "channel_id", "platform", "account_type",
+    })
+    _TEMPORAL_KEYS = frozenset({"quarter", "month", "day_of_week"})
+    _SPEND_KEYS = frozenset({"monthly_spend", "spend", "budget"})
+    _STRATEGY_KEYS = frozenset({"strategy", "funnel_stage", "campaign"})
+    _MATCH_THRESHOLD = 0.6
+
+    def _weighted_context_score(
+        self,
+        pattern_ctx: Dict[str, Any],
+        current_ctx: Dict[str, Any],
+        channel_config: Optional[ChannelConfig] = None,
+        pattern_updated_at: Optional[str] = None,
+    ) -> float:
+        """Score context match between a pattern and current context (0.0-1.0).
+
+        Dimensions are weighted by ChannelConfig properties:
+        - Identity (client_id, channel_id, platform): always 1.0
+        - Temporal (quarter, month): weighted by seasonality_weight
+        - Spend (monthly_spend, budget): weighted by budget_sensitivity
+        - Strategy (strategy, funnel_stage): 0.8
+        - Other: 0.5
+
+        Includes era penalty: patterns >2 years old are progressively penalized.
+        """
+        if not pattern_ctx:
+            return 1.0
+
+        seasonality_w = channel_config.seasonality_weight if channel_config else 0.0
+        budget_w = channel_config.budget_sensitivity if channel_config else 0.0
+
+        total_weight = 0.0
+        matched_weight = 0.0
+
+        for key, pattern_value in pattern_ctx.items():
+            if key.startswith("_"):
+                continue
+            if key not in current_ctx:
+                dim_w = self._dimension_weight(key, seasonality_w, budget_w)
+                total_weight += dim_w
+                continue
+
+            dim_w = self._dimension_weight(key, seasonality_w, budget_w)
+            total_weight += dim_w
+
+            current_value = current_ctx[key]
+            if self._values_match(pattern_value, current_value):
+                matched_weight += dim_w
+
+        if total_weight == 0:
+            return 1.0
+
+        score = matched_weight / total_weight
+
+        if pattern_updated_at:
+            days_since = self._days_since_iso(pattern_updated_at)
+            era_penalty = max(0.0, 1.0 - (days_since / 730))
+            score *= era_penalty
+
+        return score
+
+    def _dimension_weight(
+        self, key: str, seasonality_w: float, budget_w: float
+    ) -> float:
+        if key in self._IDENTITY_KEYS:
+            return 1.0
+        if key in self._TEMPORAL_KEYS:
+            return max(0.2, seasonality_w) if seasonality_w > 0 else 0.3
+        if key in self._SPEND_KEYS:
+            return max(0.2, budget_w) if budget_w > 0 else 0.3
+        if key in self._STRATEGY_KEYS:
+            return 0.8
+        return 0.5
+
+    @staticmethod
+    def _values_match(pattern_value: Any, current_value: Any) -> bool:
+        if isinstance(pattern_value, (int, float)) and isinstance(current_value, (int, float)):
+            if pattern_value == 0:
+                return current_value == 0
+            tolerance = abs(pattern_value) * 0.3
+            return abs(current_value - pattern_value) <= tolerance
+        return str(pattern_value) == str(current_value)
+
+    @staticmethod
+    def _days_since_iso(iso_ts: str) -> float:
+        try:
+            dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+            return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+        except (ValueError, AttributeError):
+            return 0.0
+
     def _context_matches(
         self,
         pattern_ctx: Dict[str, Any],
-        current_ctx: Dict[str, Any]
+        current_ctx: Dict[str, Any],
     ) -> bool:
-        """
-        Check if pattern condition matches current context.
-        
-        For numeric values: allows 30% tolerance
-        For other values: requires exact match
-        
-        Args:
-            pattern_ctx: Pattern's condition dictionary
-            current_ctx: Current execution context
-            
-        Returns:
-            True if contexts match within tolerance
-        """
-        if not pattern_ctx:
-            # Empty pattern condition matches everything
-            return True
-        
-        for key, pattern_value in pattern_ctx.items():
-            if key not in current_ctx:
-                # Context missing required key
-                return False
-            
-            current_value = current_ctx[key]
-            
-            # Numeric comparison with 30% tolerance
-            if isinstance(pattern_value, (int, float)) and isinstance(current_value, (int, float)):
-                if pattern_value == 0:
-                    # Avoid division by zero; require exact match for zero
-                    if current_value != 0:
-                        return False
-                else:
-                    tolerance = abs(pattern_value) * 0.3
-                    if abs(current_value - pattern_value) > tolerance:
-                        return False
-            else:
-                # Exact match for non-numeric values
-                if current_value != pattern_value:
-                    return False
-        
-        return True
+        """Backward-compatible boolean wrapper around weighted scoring."""
+        return self._weighted_context_score(pattern_ctx, current_ctx) >= self._MATCH_THRESHOLD
     
     def _get_default_parameters(
         self,
@@ -924,6 +1014,110 @@ class Predictor:
                     result[key] = 0 if isinstance(value, int) else 0.0
         
         return result
+
+
+    # ── Reference knowledge enrichment ───────────────────────────────
+
+    @staticmethod
+    def _build_ref_tags(skill_name: str, domain: Domain, context: Dict[str, Any]) -> List[str]:
+        """Derive search tags from skill/domain/context for reference_knowledge queries."""
+        tags: List[str] = []
+        channel_id = context.get("channel_id", "")
+        if channel_id:
+            parts = channel_id.split(".")
+            tags.extend(parts)
+        channel = context.get("channel", "")
+        if channel:
+            tags.append(channel.lower())
+        dom_map = {
+            Domain.CAMPAIGN: "advertising",
+            Domain.CONTENT: "strategy",
+            Domain.HEALTH: "retention",
+            Domain.REVENUE: "growth",
+        }
+        if domain in dom_map:
+            tags.append(dom_map[domain])
+        strategy = context.get("strategy", "")
+        if strategy:
+            tags.append(strategy.lower().replace(" ", "-"))
+        return [t for t in tags if t]
+
+    def _enrich_with_reference_knowledge(
+        self,
+        skill_name: str,
+        domain: Domain,
+        context: Dict[str, Any],
+        guidance: Guidance,
+    ) -> Dict[str, Any]:
+        """Query reference_knowledge and attach relevant frameworks/tactics to guidance.
+
+        Returns a dict with keys:
+          - expert_frameworks: list of {expert, framework, purpose, instant_fail_rules}
+          - tactics: list of {title, summary, tag}
+          - total_matches: int
+        """
+        try:
+            from lib.supabase_client import get_supabase_or_none
+        except ImportError:
+            return {}
+
+        db = get_supabase_or_none()
+        if db is None:
+            return {}
+
+        tags = self._build_ref_tags(skill_name, domain, context)
+        if not tags:
+            return {}
+
+        try:
+            result = (
+                db.table("reference_knowledge")
+                .select("source,title,summary,content,tags,expert_handle,confidence_weight")
+                .overlaps("tags", tags)
+                .order("confidence_weight", desc=True)
+                .limit(15)
+                .execute()
+            )
+        except Exception as e:
+            logger.debug(f"reference_knowledge query failed: {e}")
+            return {}
+
+        rows = result.data or []
+        if not rows:
+            return {}
+
+        expert_frameworks: List[Dict[str, Any]] = []
+        tactics: List[Dict[str, Any]] = []
+
+        for row in rows:
+            src = row.get("source", "")
+            content = row.get("content", {})
+            if not isinstance(content, dict):
+                continue
+
+            if src == "expert-panel":
+                instant_fails = content.get("instant_fail_rules", [])
+                expert_frameworks.append({
+                    "expert": row.get("expert_handle", ""),
+                    "framework": content.get("framework_name", row.get("title", "")),
+                    "purpose": content.get("purpose", ""),
+                    "instant_fail_rules": instant_fails[:3],
+                })
+            elif src in ("tactics-vault", "b2c-courses"):
+                tactics.append({
+                    "title": row.get("title", ""),
+                    "summary": row.get("summary", ""),
+                    "tag": content.get("tag", ""),
+                })
+
+        if not expert_frameworks and not tactics:
+            return {}
+
+        return {
+            "expert_frameworks": expert_frameworks[:5],
+            "tactics": tactics[:5],
+            "total_matches": len(rows),
+        }
 
 
 __all__ = [

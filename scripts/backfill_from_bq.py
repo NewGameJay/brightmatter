@@ -98,25 +98,26 @@ def backfill_weekly(
 
             episode_id = _episode_id(channel, week_start, "weekly")
 
+            _f = lambda v: float(v) if v is not None else 0.0
             current_metrics = {
-                "spend": float(row.get("total_spend", 0)),
-                "ff": float(row.get("total_ff", 0)),
-                "appt": float(row.get("total_appt", 0)),
-                "cs": float(row.get("total_cs", 0)),
-                "deal_value": float(row.get("total_deal_value", 0)),
-                "cpa": float(row.get("cpa", 0) or 0),
-                "cac": float(row.get("cac", 0) or 0),
+                "spend": _f(row.get("total_spend")),
+                "ff": _f(row.get("total_ff")),
+                "appt": _f(row.get("total_appt")),
+                "cs": _f(row.get("total_cs")),
+                "deal_value": _f(row.get("total_deal_value")),
+                "cpa": _f(row.get("cpa")),
+                "cac": _f(row.get("cac")),
             }
 
             if prior_row:
                 prior_metrics = {
-                    "spend": float(prior_row.get("total_spend", 0)),
-                    "ff": float(prior_row.get("total_ff", 0)),
-                    "appt": float(prior_row.get("total_appt", 0)),
-                    "cs": float(prior_row.get("total_cs", 0)),
-                    "deal_value": float(prior_row.get("total_deal_value", 0)),
-                    "cpa": float(prior_row.get("cpa", 0) or 0),
-                    "cac": float(prior_row.get("cac", 0) or 0),
+                    "spend": _f(prior_row.get("total_spend")),
+                    "ff": _f(prior_row.get("total_ff")),
+                    "appt": _f(prior_row.get("total_appt")),
+                    "cs": _f(prior_row.get("total_cs")),
+                    "deal_value": _f(prior_row.get("total_deal_value")),
+                    "cpa": _f(prior_row.get("cpa")),
+                    "cac": _f(prior_row.get("cac")),
                 }
                 prior_cpa = prior_metrics["cpa"]
                 deltas = _compute_deltas(current_metrics, prior_metrics)
@@ -217,24 +218,25 @@ def backfill_daily(
 
             episode_id = _episode_id(channel, dt_str, "daily")
 
-            spend = float(row.get("spend", 0))
-            appt = float(row.get("nbr_appt", 0))
+            _f = lambda v: float(v) if v is not None else 0.0
+            spend = _f(row.get("spend"))
+            appt = _f(row.get("nbr_appt"))
             cpa = spend / appt if appt > 0 else 0
 
             metrics = {
                 "spend": spend,
-                "ff": float(row.get("nbr_ff", 0)),
+                "ff": _f(row.get("nbr_ff")),
                 "appt": appt,
-                "mql": float(row.get("nbr_mql", 0)),
-                "sql": float(row.get("nbr_sql", 0)),
-                "cs": float(row.get("nbr_cs", 0)),
+                "mql": _f(row.get("nbr_mql")),
+                "sql": _f(row.get("nbr_sql")),
+                "cs": _f(row.get("nbr_cs")),
                 "cpa": cpa,
             }
 
             prior_cpa = 0
             if prior_row:
-                p_spend = float(prior_row.get("spend", 0))
-                p_appt = float(prior_row.get("nbr_appt", 0))
+                p_spend = _f(prior_row.get("spend"))
+                p_appt = _f(prior_row.get("nbr_appt"))
                 prior_cpa = p_spend / p_appt if p_appt > 0 else 0
 
             if dry_run:

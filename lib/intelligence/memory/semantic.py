@@ -430,6 +430,10 @@ class SemanticMemoryStore:
                 # Update recent_accuracy with rolling EMA
                 outcome_value = 1.0 if success else 0.0
                 pattern.recent_accuracy = 0.9 * pattern.recent_accuracy + 0.1 * outcome_value
+
+                if not hasattr(pattern, 'recommendation') or pattern.recommendation is None:
+                    pattern.recommendation = {}
+                pattern.recommendation["sample_count"] = pattern.evidence_count
                 
                 # Update timestamps
                 now_iso = datetime.now(timezone.utc).isoformat()
@@ -803,64 +807,93 @@ class SemanticMemoryStore:
         
         return None
     
+    _IDENTITY_KEYS = frozenset({
+        "client_id", "channel_id", "platform", "account_type",
+    })
+    _TEMPORAL_KEYS = frozenset({"quarter", "month", "day_of_week"})
+    _SPEND_KEYS = frozenset({"monthly_spend", "spend", "budget"})
+    _STRATEGY_KEYS = frozenset({"strategy", "funnel_stage", "campaign"})
+    _MATCH_THRESHOLD = 0.6
+
+    def _weighted_context_score(
+        self,
+        pattern_ctx: Dict[str, Any],
+        episode_ctx: Dict[str, Any],
+        pattern_updated_at: Optional[str] = None,
+    ) -> float:
+        """Score context match using dimension-weighted comparison (0.0-1.0).
+
+        Includes era penalty: patterns >2 years old are progressively penalized.
+        """
+        if not pattern_ctx:
+            return 1.0
+        if not episode_ctx:
+            return 0.0
+
+        total_weight = 0.0
+        matched_weight = 0.0
+
+        for key, pattern_val in pattern_ctx.items():
+            if key.startswith("_"):
+                continue
+
+            dim_w = self._dim_weight(key)
+            total_weight += dim_w
+
+            if key not in episode_ctx:
+                continue
+
+            episode_val = episode_ctx[key]
+
+            if isinstance(pattern_val, dict) and "min" in pattern_val and "max" in pattern_val:
+                if isinstance(episode_val, (int, float)):
+                    if pattern_val["min"] <= episode_val <= pattern_val["max"]:
+                        matched_weight += dim_w
+            elif isinstance(pattern_val, (int, float)) and isinstance(episode_val, (int, float)):
+                if pattern_val == 0:
+                    if episode_val == 0:
+                        matched_weight += dim_w
+                else:
+                    tolerance = abs(pattern_val) * 0.2
+                    if abs(pattern_val - episode_val) <= tolerance:
+                        matched_weight += dim_w
+            elif isinstance(pattern_val, list):
+                if str(episode_val) in [str(v) for v in pattern_val]:
+                    matched_weight += dim_w
+            else:
+                if str(pattern_val) == str(episode_val):
+                    matched_weight += dim_w
+
+        if total_weight == 0:
+            return 1.0
+
+        score = matched_weight / total_weight
+
+        if pattern_updated_at:
+            days_since = self._calculate_days_since(pattern_updated_at)
+            era_penalty = max(0.0, 1.0 - (days_since / 730))
+            score *= era_penalty
+
+        return score
+
+    def _dim_weight(self, key: str) -> float:
+        if key in self._IDENTITY_KEYS:
+            return 1.0
+        if key in self._TEMPORAL_KEYS:
+            return 0.3
+        if key in self._SPEND_KEYS:
+            return 0.3
+        if key in self._STRATEGY_KEYS:
+            return 0.8
+        return 0.5
+
     def _contexts_match(
         self,
         pattern_ctx: Dict[str, Any],
-        episode_ctx: Dict[str, Any]
+        episode_ctx: Dict[str, Any],
     ) -> bool:
-        """
-        Check if pattern context matches episode context.
-        
-        Uses 20% tolerance for numeric values.
-        
-        Args:
-            pattern_ctx: The pattern's condition context
-            episode_ctx: The episode's context to match
-            
-        Returns:
-            True if contexts match, False otherwise
-        """
-        if not pattern_ctx:
-            return True  # Empty pattern matches everything
-        
-        if not episode_ctx:
-            return False  # Episode with no context doesn't match non-empty pattern
-        
-        for key, pattern_val in pattern_ctx.items():
-            if key not in episode_ctx:
-                return False
-            
-            episode_val = episode_ctx[key]
-            
-            # Handle range values in pattern
-            if isinstance(pattern_val, dict) and "min" in pattern_val and "max" in pattern_val:
-                if isinstance(episode_val, (int, float)):
-                    if not (pattern_val["min"] <= episode_val <= pattern_val["max"]):
-                        return False
-                else:
-                    return False
-            
-            # Handle numeric comparison with tolerance
-            elif isinstance(pattern_val, (int, float)) and isinstance(episode_val, (int, float)):
-                if pattern_val == 0:
-                    tolerance = 0.2
-                else:
-                    tolerance = abs(pattern_val) * 0.2
-                
-                if abs(pattern_val - episode_val) > tolerance:
-                    return False
-            
-            # Handle set match for categorical values (list of allowed values)
-            elif isinstance(pattern_val, list):
-                if str(episode_val) not in [str(v) for v in pattern_val]:
-                    return False
-
-            # Handle exact match for non-numeric
-            else:
-                if str(pattern_val) != str(episode_val):
-                    return False
-        
-        return True
+        """Backward-compatible wrapper using weighted scoring."""
+        return self._weighted_context_score(pattern_ctx, episode_ctx) >= self._MATCH_THRESHOLD
     
     def _archive_pattern(
         self,

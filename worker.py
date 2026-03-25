@@ -28,8 +28,10 @@ import hashlib
 import logging
 import os
 import time
+import uuid
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -128,6 +130,14 @@ class BrightMatterWorker:
             except Exception as e:
                 logger.error(f"Checkpoint processing failed: {e}")
 
+            # ── Tier 4: Ingest call transcripts from MH-OS ──────────
+            try:
+                transcript_stats = self._ingest_call_transcripts()
+                stats["transcript_episodes"] = transcript_stats.get("episodes_created", 0)
+                logger.info(f"Tier 4 transcripts: {transcript_stats}")
+            except Exception as e:
+                logger.debug(f"Tier 4 transcript ingestion skipped or failed: {e}")
+
             # ── Tier 3: Publish patterns to Airtable ─────────────────
             try:
                 pub_stats = self._publish_patterns_to_airtable()
@@ -177,11 +187,14 @@ class BrightMatterWorker:
             logger.warning(f"Unknown event_type: {event_type}")
 
     def _process_signal(self, event: Dict[str, Any]):
-        """Convert a signal event (e.g., from MH-OS) into an episode."""
+        """Convert a signal event (e.g., from MH-OS) into an episode.
+
+        Wires the Predictor to populate expected_signal/patterns_used,
+        and the Learner to update patterns after storing.
+        """
         from lib.intelligence.types import (
             Domain, EpisodicMemory, Prediction, Outcome, EpisodeSource,
         )
-        import uuid
 
         skill_name = event.get("skill_name") or event.get("source", "signal")
         client_id = event.get("client_id", "unknown")
@@ -201,13 +214,26 @@ class BrightMatterWorker:
                 primary_signal = float(metrics[key])
                 break
 
+        guidance = None
+        try:
+            guidance = self.engine.predictor.get_guidance(
+                skill_name=skill_name,
+                tenant_id=client_id,
+                domain=domain,
+                context=context,
+            )
+        except Exception as e:
+            logger.debug(f"Signal predictor guidance failed: {e}")
+
         prediction = Prediction(
             prediction_id=str(uuid.uuid4())[:12],
             skill_name=skill_name,
             tenant_id=client_id,
             domain=domain,
-            expected_signal=0.5,
-            expected_baseline=1.0,
+            expected_signal=guidance.expected_signal if guidance else 0.5,
+            expected_baseline=guidance.expected_baseline if guidance else 1.0,
+            confidence=guidance.confidence if guidance else 0.5,
+            patterns_used=guidance.patterns_used if guidance else [],
             context=context,
         )
 
@@ -224,11 +250,14 @@ class BrightMatterWorker:
             },
         )
 
-        episode = EpisodicMemory(
-            prediction=prediction,
-            outcome=outcome,
-        )
+        episode = EpisodicMemory(prediction=prediction, outcome=outcome)
         self.engine.episodic.store(episode)
+
+        if guidance:
+            try:
+                self.engine.learner.learn_from_outcome(prediction, outcome)
+            except Exception as e:
+                logger.debug(f"Signal learner update failed: {e}")
 
     def _process_skill_completion(self, event: Dict[str, Any]):
         """Process a completed skill execution event."""
@@ -440,13 +469,133 @@ class BrightMatterWorker:
 
         return stats
 
-    # ── Tier 2: BigQuery Daily Delta ─────────────────────────────
+    # ── Channel Resolution ─────────────────────────────────────
+
+    _BQ_CHANNEL_TO_REGISTRY = {
+        "Google": "paid_search.google",
+        "Facebook": "paid_social.meta",
+        "Instagram": "paid_social.meta",
+        "TikTok": "paid_social.tiktok",
+        "Tiktok": "paid_social.tiktok",
+        "LinkedIn": "organic_social.linkedin",
+        "Reddit": "paid_social.meta",
+        "Twitter": "paid_social.meta",
+        "YouTube": "paid_social.meta",
+        "Bing": "paid_search.google",
+        "Email": "email.broadcast",
+        "SMS": "sms_push.promotional",
+        "Vibe": "landing_page",
+        "quora": "paid_social.meta",
+    }
+
+    _CORRELATION_SIGNATURES = {
+        "creative_fatigue": {
+            "conditions": {"cpa": "rising", "ctr": "falling", "impressions": "rising"},
+            "skill_name": "correlation-creative-fatigue",
+        },
+        "budget_scaling_inefficiency": {
+            "conditions": {"spend": "rising", "cpa": "rising", "roas": "falling"},
+            "skill_name": "correlation-budget-scaling",
+        },
+        "channel_saturation": {
+            "conditions": {"impressions": "flat", "cpc": "rising", "ctr": "falling"},
+            "skill_name": "correlation-channel-saturation",
+        },
+    }
+
+    def _resolve_channel_id(self, bq_channel: str) -> str:
+        return self._BQ_CHANNEL_TO_REGISTRY.get(bq_channel, "")
+
+    def _get_channel_config(self, channel_id: str):
+        from lib.intelligence.adapters.channels import get_channel_config
+        return get_channel_config(channel_id) if channel_id else None
+
+    def _check_disqualifiers(
+        self, context: Dict[str, Any], channel_config
+    ) -> Tuple[bool, str]:
+        """Return (skip, reason) if this episode should skip the Learner."""
+        dormancy = context.get("dormancy_days")
+        spend = context.get("spend", 0)
+        if dormancy is not None and dormancy > 30 and spend == 0:
+            return True, "channel_dormant"
+        if context.get("zero_spend_streak", 0) >= 7:
+            return True, "zero_spend_period"
+        if context.get("brand_crisis"):
+            return True, "brand_crisis_active"
+        if channel_config:
+            min_vol = channel_config.min_sample_size
+            impressions = context.get("impressions", 0)
+            if min_vol and isinstance(impressions, (int, float)) and impressions < min_vol:
+                return True, "insufficient_volume"
+        return False, ""
+
+    def _infer_funnel_stage(self, campaign_name: str, strategy: str) -> str:
+        lower = (campaign_name + " " + strategy).lower()
+        if any(k in lower for k in ("brand", "prospecting", "awareness", "reach")):
+            return "awareness"
+        if any(k in lower for k in ("non-brand", "retargeting", "remarketing", "decision", "conversion")):
+            return "decision"
+        return "consideration"
+
+    # ── Tier 2: BigQuery Daily + Campaign Delta ─────────────────
+
+    _MH_CLIENT_CONTEXT = {
+        "client_id": "marketerhire",
+        "client_name": "MarketerHire",
+        "industry": "b2b_marketplace",
+        "region": "US",
+    }
+
+    _CHANNEL_CONFIGS = {
+        "Google": {
+            "platform": "google_ads",
+            "account_type": "paid_search_display",
+            "strategies": [
+                "search-brand", "search-non-brand", "search-remarketing",
+                "search-competitor", "search-core", "search-roles",
+                "pmax", "display-remarketing",
+            ],
+        },
+        "Facebook": {
+            "platform": "meta_ads",
+            "account_type": "paid_social",
+            "strategies": ["prospecting", "retargeting", "remarketing", "lookalike", "reach"],
+        },
+        "LinkedIn": {
+            "platform": "linkedin_ads",
+            "account_type": "paid_social_b2b",
+            "strategies": ["prospecting", "retargeting", "engagement", "conversions"],
+        },
+        "Reddit": {"platform": "reddit_ads", "account_type": "paid_social", "strategies": ["reach", "conversions"]},
+        "Tiktok": {"platform": "tiktok_ads", "account_type": "paid_social", "strategies": ["reach", "conversions"]},
+        "Twitter": {"platform": "twitter_ads", "account_type": "paid_social"},
+        "YouTube": {"platform": "youtube_ads", "account_type": "paid_video"},
+        "Bing": {"platform": "microsoft_ads", "account_type": "paid_search"},
+        "Vibe": {"platform": "vibe_tv", "account_type": "ctv"},
+        "quora": {"platform": "quora_ads", "account_type": "paid_social"},
+    }
+
+    _TRIGGER_SIGNAL_SKILLS = frozenset({
+        "daily-pulse", "spend-pacing", "channel-advisor",
+        "google-ads-roas", "google-ads-qs", "google-ads-ad-copy",
+        "google-ads-search-terms", "google-ads-weekly",
+    })
 
     def _ingest_bq_delta(self) -> Dict[str, Any]:
-        """Pull yesterday's spend data from BigQuery and create episodes.
+        """Pull recent spend data from BigQuery and create episodes.
 
-        Only runs if BIGQUERY_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS
-        is set. Uses bm_watermarks to track last ingested date.
+        Two sub-flows:
+          A) Channel-level daily spend → one episode per (channel, date)
+          B) Campaign-level weekly rollup → one episode per (channel, campaign, week)
+
+        Wires the full evaluation pipeline:
+          - Resolves channel_id via _BQ_CHANNEL_TO_REGISTRY
+          - Populates ChannelContext (dormancy, active days, account age)
+          - Computes WoW change ratio as observed_signal
+          - Generates composite skill names
+          - Calls Predictor.get_guidance() before storing
+          - Calls Learner.learn_from_outcome() after storing
+          - Detects cross-metric correlations
         """
         if not (
             os.environ.get("BIGQUERY_CREDENTIALS_JSON")
@@ -459,7 +608,11 @@ class BrightMatterWorker:
             Domain, EpisodicMemory, Prediction, Outcome, EpisodeSource,
         )
 
-        stats = {"episodes_created": 0, "episodes_skipped": 0}
+        stats = {
+            "channel_episodes": 0, "campaign_episodes": 0,
+            "skipped_dedup": 0, "skipped_zero": 0, "skipped_disqualified": 0,
+            "correlations": 0, "failed": 0,
+        }
 
         watermark = self._get_watermark("bigquery")
         last_date_str = None
@@ -471,7 +624,7 @@ class BrightMatterWorker:
                 datetime.fromisoformat(last_date_str) + timedelta(days=1)
             ).strftime("%Y-%m-%d")
         else:
-            start = (date.today() - timedelta(days=1)).isoformat()
+            start = (date.today() - timedelta(days=7)).isoformat()
 
         end = date.today().isoformat()
 
@@ -479,20 +632,96 @@ class BrightMatterWorker:
             return {"skipped": True, "reason": "already up to date"}
 
         bq = get_bq_client()
-        rows = bq.query_daily_spend(start, end)
+        covered_dates = self._get_triggerdev_covered_dates()
 
-        prior_cpa_by_channel: Dict[str, float] = {}
+        channel_context_cache: Dict[str, Dict[str, Any]] = {}
+        prior_metrics_by_channel: Dict[str, Dict[str, float]] = {}
+        daily_metrics_for_correlation: Dict[Tuple[str, str], Dict[str, float]] = {}
+
+        _f = lambda v: float(v) if v is not None else 0.0
+
+        def _compute_channel_context(ch: str) -> Dict[str, Any]:
+            if ch in channel_context_cache:
+                return channel_context_cache[ch]
+            ctx: Dict[str, Any] = {}
+            try:
+                hist = bq.query(
+                    f"SELECT MIN(date) as first_date, MAX(date) as last_date, "
+                    f"COUNT(DISTINCT CASE WHEN spend > 0 THEN date END) as active_days "
+                    f"FROM `marketerhire.dbt_mh.fact_daily_spend__by_channel` "
+                    f"WHERE channel = '{ch}'"
+                )
+                if hist:
+                    row = hist[0] if isinstance(hist, list) else hist
+                    first = row.get("first_date")
+                    last = row.get("last_date")
+                    if first and hasattr(first, "isoformat"):
+                        ctx["account_age_days"] = (date.today() - first).days
+                    if last and hasattr(last, "isoformat"):
+                        ctx["dormancy_days"] = (date.today() - last).days
+                    ctx["active_days_last_90"] = int(row.get("active_days") or 0)
+            except Exception as e:
+                logger.debug(f"Channel context query failed for {ch}: {e}")
+            channel_context_cache[ch] = ctx
+            return ctx
+
+        # ── A) Channel-level daily episodes ─────────────────────
+        rows = bq.query_daily_spend(start, end)
 
         for row in rows:
             channel = row.get("channel", "unknown")
             dt = row.get("dt")
             dt_str = dt.isoformat()[:10] if hasattr(dt, "isoformat") else str(dt)[:10]
 
-            spend = float(row.get("spend", 0))
-            appt = float(row.get("nbr_appt", 0))
+            spend = _f(row.get("spend"))
+            appt = _f(row.get("nbr_appt"))
             cpa = spend / appt if appt > 0 else 0
 
-            prior_cpa = prior_cpa_by_channel.get(channel, cpa)
+            if spend == 0 and appt == 0:
+                stats["skipped_zero"] += 1
+                continue
+            if dt_str in covered_dates:
+                stats["skipped_dedup"] += 1
+                continue
+
+            channel_id = self._resolve_channel_id(channel)
+            cc = self._get_channel_config(channel_id)
+            ch_ctx = _compute_channel_context(channel)
+            local_config = self._CHANNEL_CONFIGS.get(channel, {})
+
+            prior = prior_metrics_by_channel.get(channel, {})
+            prior_cpa = prior.get("cpa", cpa)
+            wow_ratio = cpa / prior_cpa if prior_cpa > 0 else 1.0
+
+            composite_skill = f"channel-spend-daily:{channel_id}" if channel_id else "channel-spend-daily"
+
+            context = {
+                **self._MH_CLIENT_CONTEXT,
+                "channel": channel,
+                "channel_id": channel_id,
+                "platform": local_config.get("platform", channel.lower()),
+                "account_type": local_config.get("account_type", "unknown"),
+                "date": dt_str,
+                "window": "daily",
+                "source": "bigquery-delta",
+                **{k: v for k, v in ch_ctx.items() if v is not None},
+            }
+
+            skip, reason = self._check_disqualifiers(
+                {**context, "spend": spend, "impressions": _f(row.get("impressions", 0))}, cc,
+            )
+
+            guidance = None
+            if not skip:
+                try:
+                    guidance = self.engine.predictor.get_guidance(
+                        skill_name=composite_skill,
+                        tenant_id="marketerhire",
+                        domain=cc.domain if cc else Domain.CAMPAIGN,
+                        context=context,
+                    )
+                except Exception as e:
+                    logger.debug(f"Predictor guidance failed: {e}")
 
             ep_raw = f"bq-daily-{channel}-{dt_str}"
             ep_hash = hashlib.md5(ep_raw.encode()).hexdigest()[:12]
@@ -500,33 +729,32 @@ class BrightMatterWorker:
 
             prediction = Prediction(
                 prediction_id=episode_id,
-                skill_name="channel-spend-daily",
+                skill_name=composite_skill,
                 tenant_id="marketerhire",
-                domain=Domain.CAMPAIGN,
-                expected_signal=prior_cpa if prior_cpa else 0.5,
-                expected_baseline=1.0,
-                context={
-                    "channel": channel,
-                    "date": dt_str,
-                    "window": "daily",
-                    "source": "bigquery-delta",
-                },
+                domain=cc.domain if cc else Domain.CAMPAIGN,
+                expected_signal=guidance.expected_signal if guidance else 0.5,
+                expected_baseline=guidance.expected_baseline if guidance else prior_cpa if prior_cpa else 1.0,
+                confidence=guidance.confidence if guidance else 0.5,
+                patterns_used=guidance.patterns_used if guidance else [],
+                context=context,
             )
 
             outcome = Outcome(
                 prediction_id=episode_id,
-                observed_signal=cpa if cpa else 0.5,
-                observed_baseline=1.0,
+                observed_signal=wow_ratio,
+                observed_baseline=prior_cpa if prior_cpa else 1.0,
                 goal_completed=cpa < prior_cpa if prior_cpa else False,
                 metadata={
                     "_source": "bigquery-delta",
                     "_episode_source": EpisodeSource.MARKET_OBSERVATION.value,
+                    "absolute_cpa": cpa,
                     "spend": spend,
-                    "ff": float(row.get("nbr_ff", 0)),
+                    "ff": _f(row.get("nbr_ff")),
                     "appt": appt,
-                    "mql": float(row.get("nbr_mql", 0)),
-                    "sql_leads": float(row.get("nbr_sql", 0)),
-                    "cs": float(row.get("nbr_cs", 0)),
+                    "mql": _f(row.get("nbr_mql")),
+                    "sql_leads": _f(row.get("nbr_sql")),
+                    "cs": _f(row.get("nbr_cs")),
+                    "deal_value": _f(row.get("cs_deal_value")),
                     "cpa": cpa,
                 },
             )
@@ -534,12 +762,181 @@ class BrightMatterWorker:
             episode = EpisodicMemory(prediction=prediction, outcome=outcome)
             try:
                 self.engine.episodic.store(episode)
-                stats["episodes_created"] += 1
+                stats["channel_episodes"] += 1
             except Exception as e:
-                logger.warning(f"BQ episode {episode_id} failed: {e}")
-                stats["episodes_skipped"] += 1
+                logger.warning(f"BQ channel episode {episode_id} failed: {e}")
+                stats["failed"] += 1
+                continue
 
-            prior_cpa_by_channel[channel] = cpa
+            if not skip and guidance:
+                try:
+                    self.engine.learner.learn_from_outcome(prediction, outcome)
+                except Exception as e:
+                    logger.debug(f"Learner update failed: {e}")
+            elif skip:
+                stats["skipped_disqualified"] += 1
+
+            ctr = _f(row.get("clicks", 0)) / _f(row.get("impressions", 1)) if _f(row.get("impressions", 0)) > 0 else 0
+            prior_metrics_by_channel[channel] = {"cpa": cpa, "spend": spend, "ctr": ctr}
+            daily_metrics_for_correlation[(channel, dt_str)] = {
+                "cpa": wow_ratio, "spend": spend,
+                "ctr": ctr, "impressions": _f(row.get("impressions", 0)),
+            }
+
+        # ── A.corr) Cross-metric correlations ───────────────────
+        corr_count = self._detect_metric_correlations(daily_metrics_for_correlation)
+        stats["correlations"] = corr_count
+
+        # ── B) Campaign-level weekly episodes ───────────────────
+        week_start = (date.fromisoformat(start)
+                      - timedelta(days=date.fromisoformat(start).weekday())).isoformat()
+        campaign_rows = bq.query_campaign_spend(week_start, end)
+
+        weekly_campaigns: Dict[tuple, Dict] = defaultdict(lambda: {
+            "spend": 0, "clicks": 0, "impressions": 0,
+            "ff": 0, "appt": 0, "cs": 0, "revenue": 0,
+            "first_date": None,
+        })
+
+        for row in campaign_rows:
+            dt = row.get("dt")
+            if hasattr(dt, "isocalendar"):
+                iso = dt.isocalendar()
+                wk_key = f"{iso[0]}-W{iso[1]:02d}"
+            else:
+                wk_key = str(dt)[:7]
+
+            channel = row.get("channel", "unknown")
+            campaign = row.get("campaign", "unknown")
+            key = (channel, campaign, wk_key)
+
+            weekly_campaigns[key]["spend"] += _f(row.get("spend"))
+            weekly_campaigns[key]["clicks"] += _f(row.get("clicks"))
+            weekly_campaigns[key]["impressions"] += _f(row.get("impressions"))
+            weekly_campaigns[key]["ff"] += _f(row.get("nbr_ff"))
+            weekly_campaigns[key]["appt"] += _f(row.get("nbr_appt_sch"))
+            weekly_campaigns[key]["cs"] += _f(row.get("nbr_cs"))
+            weekly_campaigns[key]["revenue"] += _f(row.get("total_net_rev"))
+            if weekly_campaigns[key]["first_date"] is None and dt:
+                weekly_campaigns[key]["first_date"] = dt
+
+        for (channel, campaign, wk_key), m in weekly_campaigns.items():
+            if m["spend"] == 0 and m["impressions"] == 0:
+                continue
+
+            channel_id = self._resolve_channel_id(channel)
+            cc = self._get_channel_config(channel_id)
+            local_config = self._CHANNEL_CONFIGS.get(channel, {})
+
+            strategy = "other"
+            camp_lower = campaign.lower()
+            for s in local_config.get("strategies", []):
+                if s.replace("-", " ") in camp_lower.replace("-", " "):
+                    strategy = s
+                    break
+
+            cpa = m["spend"] / m["appt"] if m["appt"] > 0 else 0
+            ctr = m["clicks"] / m["impressions"] if m["impressions"] > 0 else 0
+            funnel_stage = self._infer_funnel_stage(campaign, strategy)
+
+            maturity_days = None
+            if m.get("first_date") and hasattr(m["first_date"], "isoformat"):
+                try:
+                    camp_first_q = bq.query(
+                        f"SELECT MIN(date) as first_date FROM "
+                        f"`marketerhire.dbt_mh.fact_daily_spend__by_campaign` "
+                        f"WHERE campaign = '{campaign.replace(chr(39), '')}' "
+                        f"AND channel = '{channel}'"
+                    )
+                    if camp_first_q:
+                        fd = camp_first_q[0].get("first_date") if isinstance(camp_first_q, list) else camp_first_q.get("first_date")
+                        if fd and hasattr(fd, "isoformat"):
+                            maturity_days = (date.today() - fd).days
+                except Exception:
+                    pass
+
+            composite_skill = (
+                f"campaign-perf-weekly:{channel_id}:{strategy}"
+                if channel_id else f"campaign-perf-weekly:{strategy}"
+            )
+
+            context = {
+                **self._MH_CLIENT_CONTEXT,
+                "channel": channel,
+                "channel_id": channel_id,
+                "campaign": campaign,
+                "strategy": strategy,
+                "funnel_stage": funnel_stage,
+                "platform": local_config.get("platform", channel.lower()),
+                "account_type": local_config.get("account_type", "unknown"),
+                "week": wk_key,
+                "window": "weekly",
+                "source": "bigquery-campaign",
+            }
+            if maturity_days is not None:
+                context["campaign_maturity_days"] = maturity_days
+
+            guidance = None
+            try:
+                guidance = self.engine.predictor.get_guidance(
+                    skill_name=composite_skill,
+                    tenant_id="marketerhire",
+                    domain=cc.domain if cc else Domain.CAMPAIGN,
+                    context=context,
+                )
+            except Exception as e:
+                logger.debug(f"Campaign predictor guidance failed: {e}")
+
+            ep_raw = f"bq-campaign-{channel}-{campaign}-{wk_key}"
+            ep_hash = hashlib.md5(ep_raw.encode()).hexdigest()[:12]
+            episode_id = f"ep-camp-{ep_hash}"
+
+            prediction = Prediction(
+                prediction_id=episode_id,
+                skill_name=composite_skill,
+                tenant_id="marketerhire",
+                domain=cc.domain if cc else Domain.CAMPAIGN,
+                expected_signal=guidance.expected_signal if guidance else 0.5,
+                expected_baseline=guidance.expected_baseline if guidance else 1.0,
+                confidence=guidance.confidence if guidance else 0.5,
+                patterns_used=guidance.patterns_used if guidance else [],
+                context=context,
+            )
+
+            outcome = Outcome(
+                prediction_id=episode_id,
+                observed_signal=cpa if cpa else 0.5,
+                observed_baseline=1.0,
+                goal_completed=False,
+                metadata={
+                    "_source": "bigquery-campaign",
+                    "_episode_source": EpisodeSource.MARKET_OBSERVATION.value,
+                    "spend": m["spend"],
+                    "clicks": m["clicks"],
+                    "impressions": m["impressions"],
+                    "ctr": round(ctr, 6),
+                    "ff": m["ff"],
+                    "appt": m["appt"],
+                    "cs": m["cs"],
+                    "revenue": m["revenue"],
+                    "cpa": cpa,
+                },
+            )
+
+            episode = EpisodicMemory(prediction=prediction, outcome=outcome)
+            try:
+                self.engine.episodic.store(episode)
+                stats["campaign_episodes"] += 1
+            except Exception as e:
+                logger.warning(f"BQ campaign episode {episode_id} failed: {e}")
+                stats["failed"] += 1
+                continue
+
+            if guidance:
+                try:
+                    self.engine.learner.learn_from_outcome(prediction, outcome)
+                except Exception as e:
+                    logger.debug(f"Campaign learner update failed: {e}")
 
         if rows:
             last_dt = rows[-1].get("dt")
@@ -555,6 +952,363 @@ class BrightMatterWorker:
             )
 
         return stats
+
+    def _detect_metric_correlations(
+        self, daily_metrics: Dict[Tuple[str, str], Dict[str, float]]
+    ) -> int:
+        """Detect multi-metric correlation signatures and create episodes."""
+        from lib.intelligence.types import (
+            Domain, EpisodicMemory, Prediction, Outcome, EpisodeSource,
+        )
+
+        count = 0
+        channels_by_date: Dict[str, Dict[str, Dict[str, float]]] = defaultdict(dict)
+        for (channel, dt_str), metrics in daily_metrics.items():
+            channels_by_date[dt_str][channel] = metrics
+
+        for dt_str, channels in channels_by_date.items():
+            for channel, metrics in channels.items():
+                for sig_name, sig in self._CORRELATION_SIGNATURES.items():
+                    conditions = sig["conditions"]
+                    matched = True
+                    for metric, direction in conditions.items():
+                        val = metrics.get(metric)
+                        if val is None:
+                            matched = False
+                            break
+                        if direction == "rising" and val <= 1.05:
+                            matched = False
+                        elif direction == "falling" and val >= 0.95:
+                            matched = False
+                        elif direction == "flat" and not (0.95 <= val <= 1.05):
+                            matched = False
+                    if not matched:
+                        continue
+
+                    channel_id = self._resolve_channel_id(channel)
+                    ep_raw = f"corr-{sig_name}-{channel}-{dt_str}"
+                    ep_hash = hashlib.md5(ep_raw.encode()).hexdigest()[:12]
+
+                    prediction = Prediction(
+                        prediction_id=f"ep-corr-{ep_hash}",
+                        skill_name=sig["skill_name"],
+                        tenant_id="marketerhire",
+                        domain=Domain.CAMPAIGN,
+                        expected_signal=0.5,
+                        expected_baseline=1.0,
+                        context={
+                            **self._MH_CLIENT_CONTEXT,
+                            "channel": channel,
+                            "channel_id": channel_id,
+                            "date": dt_str,
+                            "correlation_type": sig_name,
+                            "source": "cross-metric-correlation",
+                        },
+                    )
+                    outcome = Outcome(
+                        prediction_id=prediction.prediction_id,
+                        observed_signal=1.0,
+                        observed_baseline=1.0,
+                        goal_completed=False,
+                        metadata={
+                            "_source": "cross-metric-correlation",
+                            "_episode_source": EpisodeSource.MARKET_OBSERVATION.value,
+                            "correlation_type": sig_name,
+                            **{k: v for k, v in metrics.items()},
+                        },
+                    )
+                    episode = EpisodicMemory(prediction=prediction, outcome=outcome)
+                    try:
+                        self.engine.episodic.store(episode)
+                        count += 1
+                    except Exception as e:
+                        logger.debug(f"Correlation episode failed: {e}")
+        return count
+
+    def _get_triggerdev_covered_dates(self) -> set:
+        """Return dates already covered by Trigger.dev recommendation signals."""
+        covered = set()
+        for skill in self._TRIGGER_SIGNAL_SKILLS:
+            try:
+                res = (
+                    self.supabase.table("episodic_memory")
+                    .select("prediction")
+                    .eq("skill_name", skill)
+                    .order("created_at", desc=True)
+                    .limit(30)
+                    .execute()
+                )
+                for ep in (res.data or []):
+                    dt = (ep.get("prediction") or {}).get("context", {}).get("date", "")
+                    if dt:
+                        covered.add(dt)
+            except Exception:
+                pass
+        return covered
+
+    # ── Tier 4: Call Transcript Ingestion ─────────────────────────
+
+    _SKIP_TRANSCRIPT_TYPES = frozenset({
+        "freelancer_interview", "internal_sync", "vendor_call",
+    })
+
+    def _ingest_call_transcripts(self) -> Dict[str, Any]:
+        """Pull processed transcripts from Supabase and create episodes."""
+        stats = {"checked": 0, "episodes_created": 0, "skipped": 0}
+
+        watermark = self._get_watermark("transcript_ingest")
+        last_ts = watermark.get("last_processed_at") if watermark else None
+
+        query = (
+            self.supabase.table("transcripts")
+            .select("*")
+            .order("processed_at", desc=False)
+            .limit(50)
+        )
+        if last_ts:
+            query = query.gt("processed_at", last_ts)
+
+        try:
+            result = query.execute()
+        except Exception as e:
+            logger.debug(f"Transcripts table query failed: {e}")
+            return {"skipped": True, "reason": str(e)}
+
+        rows = result.data or []
+        stats["checked"] = len(rows)
+
+        if not rows:
+            return stats
+
+        latest_ts = last_ts
+        for row in rows:
+            try:
+                created = self._process_transcript(row)
+                stats["episodes_created"] += created
+            except Exception as e:
+                logger.warning(f"Transcript processing failed: {e}")
+                stats["skipped"] += 1
+
+            row_ts = row.get("processed_at", "")
+            if row_ts and (not latest_ts or row_ts > latest_ts):
+                latest_ts = row_ts
+
+        if latest_ts:
+            self._set_watermark("transcript_ingest", last_processed_at=latest_ts)
+
+        return stats
+
+    def _process_transcript(self, row: Dict[str, Any]) -> int:
+        """Extract strategic signals from a single transcript row.
+
+        Returns the number of episodic memories created.
+        """
+        from lib.intelligence.types import (
+            Domain, EpisodicMemory, Prediction, Outcome, EpisodeSource,
+        )
+
+        intelligence = row.get("intelligence") or row.get("extracted_data") or {}
+        if not intelligence:
+            return 0
+
+        meeting_type = row.get("meeting_type", "")
+        if meeting_type in self._SKIP_TRANSCRIPT_TYPES:
+            return 0
+
+        entities = intelligence.get("entities", {})
+        topics = intelligence.get("topics_discussed", [])
+        deal_signals = intelligence.get("deal_signals", {})
+        expertise = intelligence.get("expertise_signals", {})
+        voc = intelligence.get("voice_of_customer", {})
+        stakeholders = intelligence.get("stakeholders", [])
+        key_quotes = intelligence.get("key_quotes", [])
+
+        client_id = row.get("client_id") or self._infer_client_from_participants(stakeholders)
+        transcript_id = row.get("id", str(uuid.uuid4())[:12])
+        transcript_date = row.get("meeting_date") or row.get("processed_at", "")
+        count = 0
+
+        # ── Channel Strategy Episodes ──
+        channels_discussed = entities.get("channels_discussed", [])
+        for ch in channels_discussed:
+            channel_id = self._resolve_channel_id(ch) or ch.lower()
+            relevant_quotes = [
+                q for q in key_quotes
+                if isinstance(q, str) and ch.lower() in q.lower()
+            ]
+
+            ep_hash = hashlib.md5(
+                f"call-strategy-{transcript_id}-{ch}".encode()
+            ).hexdigest()[:12]
+
+            prediction = Prediction(
+                prediction_id=f"ep-call-{ep_hash}",
+                skill_name=f"call-strategy-recommendation:{channel_id}",
+                tenant_id=client_id or "cross-client",
+                domain=Domain.CAMPAIGN,
+                expected_signal=0.5,
+                expected_baseline=1.0,
+                context={
+                    "channel_id": channel_id,
+                    "channel": ch,
+                    "meeting_type": meeting_type,
+                    "source": "call_transcript",
+                    "date": transcript_date[:10] if transcript_date else "",
+                },
+            )
+            outcome = Outcome(
+                prediction_id=prediction.prediction_id,
+                observed_signal=0.7,
+                observed_baseline=1.0,
+                goal_completed=False,
+                metadata={
+                    "_source": "call_transcript",
+                    "_episode_source": EpisodeSource.OPERATOR_FEEDBACK.value,
+                    "_transcript_id": transcript_id,
+                    "quotes": relevant_quotes[:3],
+                    "topics": [t for t in topics if isinstance(t, str)][:5],
+                },
+            )
+            episode = EpisodicMemory(prediction=prediction, outcome=outcome, weight=1.5)
+            try:
+                self.engine.episodic.store(episode)
+                count += 1
+            except Exception as e:
+                logger.debug(f"Channel strategy episode failed: {e}")
+
+        # ── Budget Allocation Episodes ──
+        budget_mentions = deal_signals.get("budget_mentions", [])
+        if budget_mentions or any("budget" in str(t).lower() for t in topics):
+            ep_hash = hashlib.md5(
+                f"call-budget-{transcript_id}".encode()
+            ).hexdigest()[:12]
+
+            prediction = Prediction(
+                prediction_id=f"ep-budget-{ep_hash}",
+                skill_name="call-budget-reallocation",
+                tenant_id=client_id or "cross-client",
+                domain=Domain.CAMPAIGN,
+                expected_signal=0.5,
+                expected_baseline=1.0,
+                context={
+                    "source": "call_transcript",
+                    "meeting_type": meeting_type,
+                    "channels_discussed": channels_discussed[:5],
+                    "date": transcript_date[:10] if transcript_date else "",
+                },
+            )
+            outcome = Outcome(
+                prediction_id=prediction.prediction_id,
+                observed_signal=0.6,
+                observed_baseline=1.0,
+                goal_completed=False,
+                metadata={
+                    "_source": "call_transcript",
+                    "_episode_source": EpisodeSource.OPERATOR_FEEDBACK.value,
+                    "_transcript_id": transcript_id,
+                    "budget_mentions": budget_mentions[:5] if isinstance(budget_mentions, list) else [],
+                },
+            )
+            episode = EpisodicMemory(prediction=prediction, outcome=outcome, weight=1.5)
+            try:
+                self.engine.episodic.store(episode)
+                count += 1
+            except Exception as e:
+                logger.debug(f"Budget allocation episode failed: {e}")
+
+        # ── Expert Observation Episodes ──
+        case_studies = expertise.get("case_studies", [])
+        frameworks = expertise.get("frameworks_mentioned", [])
+        for obs in (case_studies[:3] if isinstance(case_studies, list) else []):
+            obs_text = obs if isinstance(obs, str) else str(obs)
+            ep_hash = hashlib.md5(
+                f"call-expert-{transcript_id}-{obs_text[:30]}".encode()
+            ).hexdigest()[:12]
+
+            prediction = Prediction(
+                prediction_id=f"ep-expert-{ep_hash}",
+                skill_name="expert-observation",
+                tenant_id=client_id or "cross-client",
+                domain=Domain.GENERIC,
+                expected_signal=0.5,
+                expected_baseline=1.0,
+                context={
+                    "source": "call_transcript",
+                    "meeting_type": meeting_type,
+                    "date": transcript_date[:10] if transcript_date else "",
+                },
+            )
+            outcome = Outcome(
+                prediction_id=prediction.prediction_id,
+                observed_signal=0.8,
+                observed_baseline=1.0,
+                goal_completed=True,
+                metadata={
+                    "_source": "call_transcript",
+                    "_episode_source": EpisodeSource.OPERATOR_FEEDBACK.value,
+                    "_transcript_id": transcript_id,
+                    "case_study": obs_text[:500],
+                    "frameworks": frameworks[:5] if isinstance(frameworks, list) else [],
+                },
+            )
+            episode = EpisodicMemory(prediction=prediction, outcome=outcome, weight=2.0)
+            try:
+                self.engine.episodic.store(episode)
+                count += 1
+            except Exception as e:
+                logger.debug(f"Expert observation episode failed: {e}")
+
+        # ── Client Preference Episodes (procedural) ──
+        pain_points = voc.get("pain_points", [])
+        preferences = voc.get("preferences", [])
+        if (pain_points or preferences) and client_id:
+            ep_hash = hashlib.md5(
+                f"call-pref-{transcript_id}".encode()
+            ).hexdigest()[:12]
+
+            prediction = Prediction(
+                prediction_id=f"ep-pref-{ep_hash}",
+                skill_name="client-preference",
+                tenant_id=client_id,
+                domain=Domain.GENERIC,
+                expected_signal=1.0,
+                expected_baseline=1.0,
+                context={
+                    "source": "call_transcript",
+                    "client_id": client_id,
+                    "date": transcript_date[:10] if transcript_date else "",
+                },
+            )
+            outcome = Outcome(
+                prediction_id=prediction.prediction_id,
+                observed_signal=1.0,
+                observed_baseline=1.0,
+                goal_completed=True,
+                metadata={
+                    "_source": "call_transcript",
+                    "_episode_source": EpisodeSource.CLIENT_FEEDBACK.value,
+                    "_transcript_id": transcript_id,
+                    "pain_points": pain_points[:5] if isinstance(pain_points, list) else [],
+                    "preferences": preferences[:5] if isinstance(preferences, list) else [],
+                },
+            )
+            episode = EpisodicMemory(prediction=prediction, outcome=outcome, weight=2.0)
+            try:
+                self.engine.episodic.store(episode)
+                count += 1
+            except Exception as e:
+                logger.debug(f"Client preference episode failed: {e}")
+
+        return count
+
+    def _infer_client_from_participants(self, stakeholders: List) -> str:
+        """Best-effort client_id inference from transcript stakeholders."""
+        for s in (stakeholders or []):
+            if isinstance(s, dict):
+                company = s.get("company", "")
+                if company and company.lower() not in ("marketerhire", "mh1", ""):
+                    return company.lower().replace(" ", "-")
+        return ""
 
     # ── Tier 3: Airtable Pattern Publishing ──────────────────────
 

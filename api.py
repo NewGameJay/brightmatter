@@ -17,8 +17,11 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -426,3 +429,294 @@ async def get_patterns(
         "pattern_count": len(patterns),
         "patterns": patterns,
     }
+
+
+# ── Dashboard ───────────────────────────────────────────────────────
+
+@app.get("/api/v1/dashboard/data")
+async def dashboard_data():
+    """Public endpoint — returns live stats for the dashboard UI."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    ep_res = db.table("episodic_memory").select(
+        "episode_id,skill_name,domain,weight,prediction_error,created_at"
+    ).order("created_at", desc=True).limit(500).execute()
+    episodes = ep_res.data or []
+
+    pat_res = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count,"
+        "successes,failures,recent_accuracy"
+    ).execute()
+    patterns = pat_res.data or []
+
+    guid_res = db.table("guidance_cache").select(
+        "skill_name,client_id,confidence"
+    ).execute()
+    guidance = guid_res.data or []
+
+    wm_res = db.table("bm_watermarks").select("*").execute()
+    watermarks = wm_res.data or []
+
+    sig_res = db.table("signals").select("id", count="exact").limit(0).execute()
+    ev_res = db.table("events").select("id", count="exact").limit(0).execute()
+
+    skill_dist: Dict[str, int] = {}
+    domain_dist: Dict[str, int] = {}
+    for ep in episodes:
+        s = ep.get("skill_name") or "unknown"
+        d = ep.get("domain") or "generic"
+        skill_dist[s] = skill_dist.get(s, 0) + 1
+        domain_dist[d] = domain_dist.get(d, 0) + 1
+
+    avg_conf = (
+        sum(p.get("confidence") or 0 for p in patterns) / len(patterns)
+        if patterns else 0
+    )
+
+    return {
+        "episodes": episodes,
+        "patterns": patterns,
+        "guidance": guidance,
+        "watermarks": watermarks,
+        "signal_count": sig_res.count or 0,
+        "event_count": ev_res.count or 0,
+        "skill_dist": skill_dist,
+        "domain_dist": domain_dist,
+        "avg_confidence": avg_conf,
+    }
+
+
+@app.get("/api/v1/dashboard/feed")
+async def dashboard_feed(limit: int = 80):
+    """Returns a unified chronological activity feed in human language."""
+    from lib.supabase_client import get_supabase
+    db = get_supabase()
+
+    feed: List[Dict[str, Any]] = []
+
+    # ── Events (from MH-OS, Jarvis, etc.) ──
+    ev_res = db.table("events").select(
+        "id,source,event_type,skill_name,client_id,domain,result,context,metrics,created_at"
+    ).order("created_at", desc=True).limit(40).execute()
+    for e in (ev_res.data or []):
+        src = e.get("source", "unknown")
+        etype = e.get("event_type", "")
+        result = e.get("result") or {}
+        ctx = e.get("context") or {}
+        metrics = e.get("metrics") or {}
+        skill = e.get("skill_name", "unknown")
+        domain = e.get("domain", "")
+
+        if etype == "jarvis_episode":
+            query = ctx.get("query_summary", "")
+            tools = ctx.get("tools_used", [])
+            cost = metrics.get("cost_usd", 0)
+            sat = result.get("user_satisfaction")
+            text = f"Jarvis: {query}" if query else "Jarvis ran a task"
+            if tools:
+                text += f" (used {', '.join(tools[:3])})"
+            if cost > 0:
+                text += f" — ${cost:.2f}"
+            detail = f"jarvis / satisfaction: {sat}/5" if sat else "jarvis"
+        elif etype == "skill_completed":
+            summary = result.get("summary", "")
+            text = summary or f"Completed {skill}"
+            decisions = result.get("decisions", [])
+            if decisions and not summary:
+                text = decisions[0][:120] if isinstance(decisions[0], str) else str(decisions[0])[:120]
+            detail = f"{src} / {skill} / {domain}" if domain else f"{src} / {skill}"
+        else:
+            text = result.get("summary", "") or f"{etype}: {skill}"
+            detail = f"{src} / {domain}" if domain else src
+
+        icon = "robot" if src == "jarvis" else "bolt"
+        feed.append({
+            "ts": e.get("created_at", ""),
+            "type": "event",
+            "icon": icon,
+            "text": text,
+            "detail": detail,
+            "color": "cyan",
+        })
+
+    # ── Episodes ──
+    ep_res = db.table("episodic_memory").select(
+        "episode_id,skill_name,domain,prediction,outcome,weight,prediction_error,created_at"
+    ).order("created_at", desc=True).limit(40).execute()
+    seen_skills: Dict[str, int] = {}
+    for ep in (ep_res.data or []):
+        skill = ep.get("skill_name", "unknown")
+        seen_skills[skill] = seen_skills.get(skill, 0) + 1
+        if seen_skills[skill] > 4:
+            continue
+        ctx = (ep.get("prediction") or {}).get("context", {})
+        meta = (ep.get("outcome") or {}).get("metadata", {})
+        pe = ep.get("prediction_error") or 0
+        channel = ctx.get("channel", "")
+        source = ctx.get("source", "")
+        spend = meta.get("spend")
+        cpa = meta.get("cpa")
+
+        ep_source = meta.get("_episode_source", "")
+        icon = "brain"
+        color = "purple"
+
+        if source == "call_transcript":
+            icon = "mic"
+            color = "teal"
+            transcript_id = meta.get("_transcript_id", "")[:8]
+            if skill.startswith("call-strategy-recommendation"):
+                ch_label = channel or skill.split(":")[-1] if ":" in skill else "channel"
+                quotes = meta.get("quotes", [])
+                text = f"CMO strategy rec for {ch_label}"
+                if quotes:
+                    text += f': "{quotes[0][:80]}…"' if len(quotes[0]) > 80 else f': "{quotes[0]}"'
+            elif skill == "call-budget-reallocation":
+                channels_list = ctx.get("channels_discussed", [])
+                text = "Budget reallocation discussed"
+                if channels_list:
+                    text += f" ({', '.join(channels_list[:3])})"
+            elif skill == "expert-observation":
+                cs = meta.get("case_study", "")
+                fw = meta.get("frameworks", [])
+                text = f"Expert insight: {cs[:90]}" if cs else "Expert observation recorded"
+                if fw:
+                    text += f" [frameworks: {', '.join(fw[:2])}]"
+            elif skill == "client-preference":
+                pains = meta.get("pain_points", [])
+                prefs = meta.get("preferences", [])
+                items = pains[:2] + prefs[:2]
+                text = "Client preference captured"
+                if items:
+                    text += f": {', '.join(str(i)[:40] for i in items)}"
+            else:
+                text = f"Transcript signal: {skill}"
+            detail = f"call / {transcript_id}" if transcript_id else "call transcript"
+        elif source == "bigquery-delta" and channel:
+            parts = [f"Ingested {channel} daily data"]
+            if spend is not None:
+                parts[0] += f" (${spend:,.0f} spend)"
+            if cpa is not None:
+                parts.append(f"CPA ${cpa:,.0f}")
+            text = " — ".join(parts)
+            detail = f"{skill} / {ep.get('domain', 'generic')}"
+        elif skill.startswith("cross-metric-correlation"):
+            icon = "link"
+            color = "orange"
+            sig_type = meta.get("correlation_type", "")
+            text = f"Cross-metric correlation: {sig_type}" if sig_type else "Multi-metric correlation detected"
+            detail = f"correlation / {channel}" if channel else "correlation"
+        elif skill == "daily-pulse":
+            text = "Processed daily pulse observation"
+            detail = f"{skill} / {ep.get('domain', 'generic')}"
+        elif "signal" in str(ep.get("source") or ""):
+            text = f"Learned from {skill} signal"
+            detail = f"{skill} / {ep.get('domain', 'generic')}"
+        else:
+            text = f"Recorded {skill} episode"
+            if pe and pe > 0.05:
+                text += f" (prediction error: {pe:.1%})"
+            detail = f"{skill} / {ep.get('domain', 'generic')}"
+
+        feed.append({
+            "ts": ep.get("created_at", ""),
+            "type": "episode",
+            "icon": icon,
+            "text": text,
+            "detail": detail,
+            "color": color,
+        })
+
+    # ── Patterns ──
+    pat_res = db.table("semantic_patterns").select(
+        "pattern_id,skill_name,domain,confidence,evidence_count,successes,failures,updated_at,created_at"
+    ).order("updated_at", desc=True).limit(20).execute()
+    seen_pat_skills: Dict[str, int] = {}
+    for p in (pat_res.data or []):
+        skill = p.get("skill_name", "unknown")
+        seen_pat_skills[skill] = seen_pat_skills.get(skill, 0) + 1
+        if seen_pat_skills[skill] > 2:
+            continue
+        conf = p.get("confidence") or 0
+        ev_count = p.get("evidence_count") or 0
+        created = p.get("created_at", "")
+        updated = p.get("updated_at", "")
+        is_new = created == updated
+        domain = p.get("domain", "generic")
+        if is_new:
+            text = f"New pattern: {skill}/{domain} ({conf:.0%} confidence, {ev_count} evidence)"
+        else:
+            text = f"Pattern strengthened: {skill}/{domain} → {conf:.0%} ({ev_count} evidence, {p.get('successes',0)} wins)"
+        feed.append({
+            "ts": updated,
+            "type": "pattern",
+            "icon": "sparkle",
+            "text": text,
+            "detail": f"{skill} / {domain}",
+            "color": "gold",
+        })
+
+    # ── Guidance updates ──
+    gu_res = db.table("guidance_cache").select(
+        "skill_name,client_id,domain,confidence,expected_value,updated_at"
+    ).order("updated_at", desc=True).limit(10).execute()
+    seen_gu: Dict[str, int] = {}
+    for g in (gu_res.data or []):
+        skill = g.get("skill_name", "unknown")
+        seen_gu[skill] = seen_gu.get(skill, 0) + 1
+        if seen_gu[skill] > 2:
+            continue
+        conf = g.get("confidence") or 0
+        text = f"Guidance refreshed: {skill} ({conf:.0%} confidence)"
+        feed.append({
+            "ts": g.get("updated_at", ""),
+            "type": "guidance",
+            "icon": "compass",
+            "text": text,
+            "detail": f"{skill} / {g.get('domain', 'generic')}",
+            "color": "purple",
+        })
+
+    # ── Signals ──
+    sig_res = db.table("signals").select(
+        "id,date,source,lever,summary,created_at"
+    ).order("created_at", desc=True).limit(15).execute()
+    for s in (sig_res.data or []):
+        text = s.get("summary") or f"Signal from {s.get('source', 'unknown')}"
+        feed.append({
+            "ts": s.get("created_at", ""),
+            "type": "signal",
+            "icon": "signal",
+            "text": text,
+            "detail": s.get("lever", ""),
+            "color": "coral",
+        })
+
+    # ── Sync watermarks ──
+    wm_res = db.table("bm_watermarks").select("*").execute()
+    for w in (wm_res.data or []):
+        src = (w.get("source") or "").upper()
+        ts = w.get("last_processed_at", "")
+        if ts:
+            feed.append({
+                "ts": w.get("updated_at", ts),
+                "type": "sync",
+                "icon": "sync",
+                "text": f"Data stream synced: {src}",
+                "detail": f"Last processed: {ts[:19]}",
+                "color": "cyan",
+            })
+
+    feed.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    return feed[:limit]
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Serve the live dashboard HTML."""
+    for base in [Path(__file__).parent, Path("/workspace")]:
+        p = base / "dashboard.html"
+        if p.exists():
+            return HTMLResponse(p.read_text())
+    raise HTTPException(status_code=404, detail="dashboard.html not found")
