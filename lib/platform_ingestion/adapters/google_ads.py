@@ -26,7 +26,6 @@ SELECT
   metrics.conversions_value,
   metrics.ctr,
   metrics.average_cpc,
-  metrics.video_views,
   metrics.interactions
 FROM campaign
 WHERE segments.date BETWEEN '{start}' AND '{end}'
@@ -62,9 +61,12 @@ class GoogleAdsAdapter(BasePlatformAdapter):
             "refresh_token": creds["refresh_token"],
             "use_proto_plus": True,
         }
-        login_cid = creds.get("login_customer_id", "")
-        if login_cid:
-            client_config["login_customer_id"] = str(login_cid).replace("-", "")
+        # Only set login_customer_id if the client explicitly has one in
+        # their datasources.json (MCC hierarchy). For direct user admin
+        # access via OAuth refresh token, omit it entirely.
+        per_client_mcc = str(config.extra.get("login_customer_id", "")).replace("-", "")
+        if per_client_mcc:
+            client_config["login_customer_id"] = per_client_mcc
 
         try:
             gads_client = GoogleAdsClient.load_from_dict(client_config)
@@ -99,10 +101,7 @@ class GoogleAdsAdapter(BasePlatformAdapter):
                                 "clicks": 0,
                                 "conversions": 0.0,
                                 "conversion_value": 0.0,
-                                "ctr": 0.0,
-                                "avg_cpc": 0.0,
                                 "campaigns": 0,
-                                "video_views": 0,
                             }
                         m = day_agg[d]
                         cost = row.metrics.cost_micros / 1_000_000
@@ -111,7 +110,6 @@ class GoogleAdsAdapter(BasePlatformAdapter):
                         m["clicks"] += row.metrics.clicks
                         m["conversions"] += row.metrics.conversions
                         m["conversion_value"] += row.metrics.conversions_value
-                        m["video_views"] += row.metrics.video_views
                         m["campaigns"] += 1
 
                 for d_str, m in sorted(day_agg.items()):
@@ -163,7 +161,6 @@ class GoogleAdsAdapter(BasePlatformAdapter):
 
         creds = config.credentials
         customer_id = str(config.account_id).replace("-", "")
-        login_cid = str(creds.get("login_customer_id", customer_id)).replace("-", "")
 
         # Get an access token from the refresh token
         token_url = "https://oauth2.googleapis.com/token"
@@ -194,8 +191,9 @@ class GoogleAdsAdapter(BasePlatformAdapter):
             "developer-token": creds["developer_token"],
             "Content-Type": "application/json",
         }
-        if login_cid and login_cid != customer_id:
-            headers["login-customer-id"] = login_cid
+        per_client_mcc = str(config.extra.get("login_customer_id", "")).replace("-", "")
+        if per_client_mcc:
+            headers["login-customer-id"] = per_client_mcc
 
         rows: List[DailyMetricRow] = []
         chunk_start = start_date
@@ -222,7 +220,7 @@ class GoogleAdsAdapter(BasePlatformAdapter):
                             day_agg[d] = {
                                 "spend": 0.0, "impressions": 0, "clicks": 0,
                                 "conversions": 0.0, "conversion_value": 0.0,
-                                "campaigns": 0, "video_views": 0,
+                                "campaigns": 0,
                             }
                         m = day_agg[d]
                         metrics = r.get("metrics", {})
@@ -231,7 +229,6 @@ class GoogleAdsAdapter(BasePlatformAdapter):
                         m["clicks"] += self._safe_int(metrics.get("clicks", 0))
                         m["conversions"] += self._safe_float(metrics.get("conversions", 0))
                         m["conversion_value"] += self._safe_float(metrics.get("conversionsValue", 0))
-                        m["video_views"] += self._safe_int(metrics.get("videoViews", 0))
                         m["campaigns"] += 1
 
                 for d_str, m in sorted(day_agg.items()):

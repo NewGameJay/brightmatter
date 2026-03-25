@@ -43,6 +43,9 @@ _ADAPTERS: Dict[str, BasePlatformAdapter] = {
 # Platforms that need rate-limit staggering
 _RATE_LIMITED = {"google_ads", "meta_ads"}
 
+# Clients excluded from platform ingestion
+_EXCLUDED_CLIENTS = {"glowguide", "hedley-bennett-33ca4ac1"}
+
 # Readable platform labels for stream_id
 _PLATFORM_LABELS: Dict[str, str] = {
     "google_ads": "GoogleAds",
@@ -145,6 +148,9 @@ class PlatformDataOrchestrator:
         limited: List[Tuple[Dict, str, Dict]] = []
 
         for client in clients:
+            if client["id"] in _EXCLUDED_CLIENTS:
+                logger.debug(f"Skipping excluded client: {client['name']}")
+                continue
             if client_filter and client_filter.lower() not in client["name"].lower():
                 continue
 
@@ -168,7 +174,12 @@ class PlatformDataOrchestrator:
 
         # Process non-rate-limited platforms first
         for client, platform, raw_config in non_limited:
-            self._process_stream(client, platform, raw_config, start_date, end_date, ingestion_type, stats)
+            try:
+                self._process_stream(client, platform, raw_config, start_date, end_date, ingestion_type, stats)
+            except Exception as e:
+                stream_id = _make_stream_id(platform, client["name"])
+                logger.error(f"Stream {stream_id} crashed: {e}", exc_info=True)
+                stats["errors"].append(f"{stream_id}: {e}")
 
         # Then rate-limited platforms with inter-account delays
         last_platform = ""
@@ -176,7 +187,12 @@ class PlatformDataOrchestrator:
             if platform == last_platform:
                 self.rate_limiter.inter_account_wait(platform)
             last_platform = platform
-            self._process_stream(client, platform, raw_config, start_date, end_date, ingestion_type, stats)
+            try:
+                self._process_stream(client, platform, raw_config, start_date, end_date, ingestion_type, stats)
+            except Exception as e:
+                stream_id = _make_stream_id(platform, client["name"])
+                logger.error(f"Stream {stream_id} crashed: {e}", exc_info=True)
+                stats["errors"].append(f"{stream_id}: {e}")
 
         logger.info(
             f"Platform ingestion complete: {stats['clients_processed']} clients, "

@@ -83,7 +83,7 @@ def api_endpoint():
 @app.function(
     image=bm_image,
     secrets=bm_secrets,
-    timeout=600,
+    timeout=1800,
     schedule=modal.Period(minutes=15),
 )
 def worker_cron():

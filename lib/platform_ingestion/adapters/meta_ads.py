@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from typing import Any, Dict, List
@@ -65,12 +66,15 @@ class MetaAdsAdapter(BasePlatformAdapter):
         while chunk_start <= end_date:
             chunk_end = min(chunk_start + timedelta(days=89), end_date)
 
+            time_range = urllib.parse.quote(
+                json.dumps({"since": chunk_start.isoformat(), "until": chunk_end.isoformat()})
+            )
             url = (
                 f"{GRAPH_API_BASE}/{account_id}/insights"
                 f"?fields={fields_str}"
                 f"&level=account"
-                f"&time_range={json.dumps({'since': chunk_start.isoformat(), 'until': chunk_end.isoformat()})}"
-                f"&time_increment=1"  # daily breakdown
+                f"&time_range={time_range}"
+                f"&time_increment=1"
                 f"&limit=500"
                 f"&access_token={token}"
             )

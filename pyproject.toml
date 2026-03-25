@@ -16,6 +16,9 @@ dependencies = [
     "numpy>=1.26.0",
     "supabase>=2.0.0",
     "modal>=0.67.0",
+    "google-cloud-bigquery>=3.20.0",
+    "google-ads>=24.0.0",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
@@ -38,5 +41,4 @@ select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 asyncio_mode = "auto"

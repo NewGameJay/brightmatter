@@ -138,7 +138,6 @@ def resolve_config(
             "client_id": os.environ.get("GOOGLE_ADS_CLIENT_ID", ""),
             "client_secret": os.environ.get("GOOGLE_ADS_CLIENT_SECRET", ""),
             "refresh_token": os.environ.get("GOOGLE_ADS_REFRESH_TOKEN", ""),
-            "login_customer_id": os.environ.get("GOOGLE_ADS_LOGIN_CUSTOMER_ID", ""),
         }
         account_id = (
             raw_config.get("customer_id")
