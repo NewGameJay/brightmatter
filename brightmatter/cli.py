@@ -1,0 +1,368 @@
+"""BrightMatter CLI — the primary interface for running ingestion, analysis, and exploration.
+
+Usage:
+    python -m brightmatter discover       # Find accounts from MCC (or generate demo)
+    python -m brightmatter ingest         # Pull daily metrics for all accounts
+    python -m brightmatter ingest --days 90  # Pull 90 days of history
+    python -m brightmatter analyze        # Run detectors + agents
+    python -m brightmatter analyze --detectors-only  # Layer 1 only (no LLM)
+    python -m brightmatter accounts       # List all accounts
+    python -m brightmatter signals        # View detected signals
+    python -m brightmatter patterns       # View recorded patterns
+    python -m brightmatter episodes       # View change→outcome episodes
+    python -m brightmatter audit <id>     # Deep audit of one account (LLM)
+    python -m brightmatter status         # Overall system status
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from brightmatter.analysis.engine import AnalysisEngine
+from brightmatter.ingestion.pipeline import IngestionPipeline
+from brightmatter.storage.database import Database
+from brightmatter.storage.repository import Repository
+
+console = Console()
+
+
+def _setup(verbose: bool = False) -> tuple[Database, Repository]:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(name)s | %(message)s")
+    db = Database()
+    db.initialize()
+    return db, Repository(db)
+
+
+# ── Commands ──
+
+def cmd_discover(args):
+    db, repo = _setup(args.verbose)
+    pipeline = IngestionPipeline(repo)
+
+    mode = "live" if pipeline.is_live else "demo"
+    console.print(f"\n[bold]Discovering accounts[/bold] (mode: {mode})\n")
+
+    accounts = pipeline.discover_accounts()
+    table = Table(title=f"Discovered {len(accounts)} Accounts")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Type")
+    table.add_column("Vertical")
+    table.add_column("Spend Tier")
+
+    for a in accounts:
+        table.add_row(a.account_id, a.account_name, a.business_type.value,
+                       a.vertical, a.spend_tier.value)
+    console.print(table)
+    db.close()
+
+
+def cmd_ingest(args):
+    db, repo = _setup(args.verbose)
+    pipeline = IngestionPipeline(repo)
+
+    console.print(f"\n[bold]Ingesting data[/bold] ({args.days} days, {'live' if pipeline.is_live else 'demo'} mode)\n")
+
+    with console.status("Pulling daily metrics..."):
+        daily = pipeline.ingest_daily(days=args.days)
+    console.print(f"  Daily metrics: {sum(daily.values())} rows across {len(daily)} accounts")
+
+    if args.keywords:
+        with console.status("Pulling keyword data..."):
+            kw = pipeline.ingest_keywords(days=min(args.days, 7))
+        console.print(f"  Keyword metrics: {sum(kw.values())} rows")
+
+    if args.changes:
+        with console.status("Pulling change history..."):
+            ch = pipeline.ingest_changes(days=min(args.days, 90))
+        console.print(f"  Change events: {sum(ch.values())} events")
+
+    console.print("\n[green]Ingestion complete.[/green]")
+    db.close()
+
+
+def cmd_analyze(args):
+    db, repo = _setup(args.verbose)
+    engine = AnalysisEngine(db, repo)
+
+    console.print("\n[bold]Running analysis...[/bold]\n")
+
+    if args.detectors_only:
+        signals = engine.run_detectors_only()
+        _print_signals(signals)
+    else:
+        results = engine.run_full_analysis(use_agents=not args.no_agents)
+        console.print(Panel(
+            f"Signals: {results.get('signals', 0)}\n"
+            f"Patterns: {results.get('patterns', 0)}\n"
+            f"Episodes: {results.get('episodes', 0)}",
+            title="Analysis Results",
+        ))
+        if results.get("agent_analysis"):
+            console.print(f"\nAgent diagnoses: {results['agent_analysis'].get('diagnoses', 0)}")
+    db.close()
+
+
+def cmd_accounts(args):
+    db, repo = _setup(args.verbose)
+    accounts = repo.list_accounts()
+    if not accounts:
+        console.print("[yellow]No accounts found. Run 'discover' first.[/yellow]")
+        db.close()
+        return
+
+    table = Table(title=f"{len(accounts)} Accounts")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Type")
+    table.add_column("Vertical")
+    table.add_column("Spend Tier")
+    table.add_column("Last Updated")
+
+    for a in accounts:
+        table.add_row(a.account_id, a.account_name, a.business_type.value,
+                       a.vertical, a.spend_tier.value,
+                       str(a.last_updated)[:10] if a.last_updated else "—")
+    console.print(table)
+    db.close()
+
+
+def cmd_signals(args):
+    db, repo = _setup(args.verbose)
+    data = repo.get_signals(account_id=args.account, domain=args.domain)
+
+    if not data or not data.get("signal_id"):
+        console.print("[yellow]No signals found. Run 'analyze' first.[/yellow]")
+        db.close()
+        return
+
+    table = Table(title="Detected Signals")
+    table.add_column("Severity", style="bold")
+    table.add_column("Account")
+    table.add_column("Domain")
+    table.add_column("Type")
+    table.add_column("Message")
+
+    sev_style = {"critical": "red bold", "warning": "yellow", "info": "dim"}
+    for i in range(min(len(data["signal_id"]), args.limit)):
+        sev = data["severity"][i]
+        table.add_row(
+            f"[{sev_style.get(sev, '')}]{sev}[/]",
+            data["account_id"][i],
+            data["domain"][i],
+            data["signal_type"][i],
+            data["message"][i][:100] if data["message"][i] else "",
+        )
+    console.print(table)
+    db.close()
+
+
+def cmd_patterns(args):
+    db, repo = _setup(args.verbose)
+    data = repo.get_patterns(domain=args.domain, min_confidence=args.min_confidence)
+
+    if not data or not data.get("pattern_id"):
+        console.print("[yellow]No patterns found. Run 'analyze' first.[/yellow]")
+        db.close()
+        return
+
+    table = Table(title="Recorded Patterns")
+    table.add_column("Severity")
+    table.add_column("Domain")
+    table.add_column("Type")
+    table.add_column("Confidence")
+    table.add_column("Summary")
+
+    sev_style = {"critical": "red bold", "warning": "yellow", "info": "dim"}
+    for i in range(min(len(data["pattern_id"]), args.limit)):
+        sev = data["severity"][i]
+        table.add_row(
+            f"[{sev_style.get(sev, '')}]{sev}[/]",
+            data["domain"][i],
+            data["pattern_type"][i],
+            f"{data['confidence'][i]:.0%}",
+            data["summary"][i][:120] if data["summary"][i] else "",
+        )
+    console.print(table)
+    db.close()
+
+
+def cmd_episodes(args):
+    db, repo = _setup(args.verbose)
+    data = repo.get_episodes(account_id=args.account, outcome=args.outcome)
+
+    if not data or not data.get("episode_id"):
+        console.print("[yellow]No episodes found. Run 'analyze' after ingesting changes.[/yellow]")
+        db.close()
+        return
+
+    table = Table(title="Episodes (Change → Outcome)")
+    table.add_column("Account")
+    table.add_column("Change")
+    table.add_column("Outcome", style="bold")
+    table.add_column("Magnitude")
+    table.add_column("Detail")
+
+    outcome_style = {"improved": "green", "degraded": "red", "neutral": "dim", "pending": "yellow"}
+    for i in range(min(len(data["episode_id"]), args.limit)):
+        out = data["outcome"][i]
+        table.add_row(
+            data["account_id"][i],
+            data["change_description"][i][:50] if data["change_description"][i] else "",
+            f"[{outcome_style.get(out, '')}]{out}[/]",
+            f"{data['outcome_magnitude'][i]:.0%}" if data["outcome_magnitude"][i] else "—",
+            data["outcome_detail"][i][:60] if data["outcome_detail"][i] else "",
+        )
+    console.print(table)
+    db.close()
+
+
+def cmd_audit(args):
+    db, repo = _setup(args.verbose)
+    engine = AnalysisEngine(db, repo)
+
+    console.print(f"\n[bold]Auditing account {args.account_id}...[/bold]\n")
+    result = engine.audit_account(args.account_id)
+
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        db.close()
+        return
+
+    console.print(Panel(
+        f"Health Score: {result.get('health_score', 0)}/100\n\n"
+        f"{result.get('summary', '')}\n\n"
+        f"Top Opportunity: {result.get('top_opportunity', '—')}\n"
+        f"Biggest Risk: {result.get('biggest_risk', '—')}",
+        title=f"Account Audit: {args.account_id}",
+    ))
+
+    if result.get("findings"):
+        table = Table(title="Findings")
+        table.add_column("Severity")
+        table.add_column("Domain")
+        table.add_column("Finding")
+        table.add_column("Recommendation")
+        for f in result["findings"]:
+            table.add_row(f["severity"], f["domain"], f["finding"], f["recommendation"])
+        console.print(table)
+    db.close()
+
+
+def cmd_status(args):
+    db, repo = _setup(args.verbose)
+    accounts = repo.list_accounts()
+
+    row = db.fetchone("SELECT count(*), min(date), max(date) FROM daily_metrics")
+    metrics_count, min_date, max_date = row if row else (0, None, None)
+
+    sig_row = db.fetchone("SELECT count(*) FROM signals")
+    pat_row = db.fetchone("SELECT count(*) FROM patterns")
+    ep_row = db.fetchone("SELECT count(*) FROM episodes")
+    ch_row = db.fetchone("SELECT count(*) FROM change_events")
+
+    console.print(Panel(
+        f"Accounts:       {len(accounts)}\n"
+        f"Daily metrics:  {metrics_count} rows ({min_date} to {max_date})\n"
+        f"Change events:  {ch_row[0] if ch_row else 0}\n"
+        f"Signals:        {sig_row[0] if sig_row else 0}\n"
+        f"Patterns:       {pat_row[0] if pat_row else 0}\n"
+        f"Episodes:       {ep_row[0] if ep_row else 0}\n"
+        f"\nMode: {'live' if IngestionPipeline(repo).is_live else 'demo'}\n"
+        f"LLM agents: {'available' if AnalysisEngine(db, repo).agent_runner.is_available else 'unavailable (set ANTHROPIC_API_KEY)'}",
+        title="BrightMatter Status",
+    ))
+    db.close()
+
+
+def _print_signals(signals):
+    if not signals:
+        console.print("[green]No signals detected — all clear.[/green]")
+        return
+
+    table = Table(title=f"{len(signals)} Signals Detected")
+    table.add_column("Severity", style="bold")
+    table.add_column("Account")
+    table.add_column("Domain")
+    table.add_column("Message")
+
+    sev_style = {"critical": "red bold", "warning": "yellow", "info": "dim"}
+    for s in signals:
+        table.add_row(
+            f"[{sev_style.get(s.severity.value, '')}]{s.severity.value}[/]",
+            s.account_id, s.domain.value, s.message[:100],
+        )
+    console.print(table)
+
+
+# ── Main ──
+
+def main():
+    parser = argparse.ArgumentParser(prog="brightmatter", description="BrightMatter — Google Ads pattern recognition")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("discover", help="Discover accounts from MCC")
+
+    p_ingest = sub.add_parser("ingest", help="Ingest data from accounts")
+    p_ingest.add_argument("--days", type=int, default=30)
+    p_ingest.add_argument("--keywords", action="store_true", help="Also pull keyword QS data")
+    p_ingest.add_argument("--changes", action="store_true", help="Also pull change history")
+
+    p_analyze = sub.add_parser("analyze", help="Run analysis pipeline")
+    p_analyze.add_argument("--detectors-only", action="store_true")
+    p_analyze.add_argument("--no-agents", action="store_true")
+
+    sub.add_parser("accounts", help="List all accounts")
+
+    p_signals = sub.add_parser("signals", help="View detected signals")
+    p_signals.add_argument("--account", default=None)
+    p_signals.add_argument("--domain", default=None)
+    p_signals.add_argument("--limit", type=int, default=50)
+
+    p_patterns = sub.add_parser("patterns", help="View recorded patterns")
+    p_patterns.add_argument("--domain", default=None)
+    p_patterns.add_argument("--min-confidence", type=float, default=0.0)
+    p_patterns.add_argument("--limit", type=int, default=50)
+
+    p_episodes = sub.add_parser("episodes", help="View episodes")
+    p_episodes.add_argument("--account", default=None)
+    p_episodes.add_argument("--outcome", default=None)
+    p_episodes.add_argument("--limit", type=int, default=50)
+
+    p_audit = sub.add_parser("audit", help="Deep audit of one account (LLM)")
+    p_audit.add_argument("account_id")
+
+    sub.add_parser("status", help="System status")
+
+    args = parser.parse_args()
+
+    cmd_map = {
+        "discover": cmd_discover,
+        "ingest": cmd_ingest,
+        "analyze": cmd_analyze,
+        "accounts": cmd_accounts,
+        "signals": cmd_signals,
+        "patterns": cmd_patterns,
+        "episodes": cmd_episodes,
+        "audit": cmd_audit,
+        "status": cmd_status,
+    }
+
+    try:
+        cmd_map[args.command](args)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted.[/dim]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        if args.verbose:
+            console.print_exception()
+        sys.exit(1)
