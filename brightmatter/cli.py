@@ -11,6 +11,7 @@ Usage:
     python -m brightmatter patterns       # View recorded patterns
     python -m brightmatter episodes       # View change→outcome episodes
     python -m brightmatter audit <id>     # Deep audit of one account (LLM)
+    python -m brightmatter validate <detector>  # Disconfirmation harness
     python -m brightmatter status         # Overall system status
 """
 
@@ -256,6 +257,132 @@ def cmd_audit(args):
     db.close()
 
 
+def cmd_validate(args):
+    from brightmatter.validation import AUDITS
+
+    db, _repo = _setup(args.verbose)
+    audit_fn = AUDITS.get(args.detector)
+    if audit_fn is None:
+        console.print(
+            f"[red]Unknown detector '{args.detector}'.[/red] "
+            f"Supported: {', '.join(sorted(AUDITS.keys()))}"
+        )
+        db.close()
+        return
+
+    console.print(f"\n[bold]Disconfirmation harness — {args.detector}[/bold]\n")
+    audits = audit_fn(db)
+
+    if not audits:
+        console.print("[yellow]No roas_contamination signals to audit. Run 'analyze' first.[/yellow]")
+        db.close()
+        return
+
+    verdict_style = {
+        "confirm": "green", "disconfirm": "red bold", "inconclusive": "yellow",
+    }
+    overall_style = {
+        "well_supported": "green bold", "supported": "green",
+        "confirmed_with_caveat": "yellow", "weak_evidence": "yellow",
+        "likely_false_positive": "red bold",
+    }
+    aggregate: dict[str, dict[str, int]] = {}
+
+    for a in audits:
+        c = a.verdict_counts
+        biz = getattr(a, "business_type", None)
+        camp = getattr(a, "campaign_id", None)
+        tokens = getattr(a, "brand_tokens_used", None)
+        meta_lines = []
+        if biz:
+            meta_lines.append(f"biz_type=[dim]{biz}[/]")
+        if camp:
+            meta_lines.append(f"campaign=[dim]{camp}[/]")
+        if tokens is not None:
+            meta_lines.append(f"brand_tokens={tokens or '[]'}")
+        meta = "  ".join(meta_lines)
+        header = (
+            f"[cyan]{a.account_id}[/] [bold]{a.account_name or '(unnamed)'}[/]"
+            + (f"  {meta}" if meta else "")
+            + f"\n[dim]{a.detector_message}[/]\n"
+            + f"verdicts: confirm={c['confirm']} disconfirm={c['disconfirm']} inconclusive={c['inconclusive']}  →  "
+            + f"[{overall_style.get(a.overall, '')}]{a.overall}[/]"
+        )
+        console.print(Panel(header, title=f"Signal {a.signal_id}"))
+
+        t = Table(show_header=True, header_style="bold")
+        t.add_column("Test", style="cyan")
+        t.add_column("Verdict")
+        t.add_column("Summary")
+        for r in a.test_results:
+            t.add_row(
+                f"{r.test_id} {r.test_name}",
+                f"[{verdict_style.get(r.verdict, '')}]{r.verdict}[/]",
+                r.summary,
+            )
+            agg = aggregate.setdefault(r.test_id, {"confirm": 0, "disconfirm": 0, "inconclusive": 0, "name": r.test_name})
+            agg[r.verdict] += 1
+        console.print(t)
+
+        if args.show_evidence:
+            for r in a.test_results:
+                if not r.evidence:
+                    continue
+                console.print(f"\n  [dim]{r.test_id} evidence:[/]")
+                for row in r.evidence[:5]:
+                    console.print(f"    {row}")
+
+    # Cross-signal aggregate
+    n = len(audits)
+    agg_table = Table(title=f"Aggregate across {n} signal(s)", show_header=True, header_style="bold")
+    agg_table.add_column("Test", style="cyan")
+    agg_table.add_column("Confirm", justify="right")
+    agg_table.add_column("Disconfirm", justify="right", style="red")
+    agg_table.add_column("Inconclusive", justify="right", style="yellow")
+    agg_table.add_column("Recommendation")
+    for tid in sorted(aggregate.keys()):
+        a = aggregate[tid]
+        rec = _recommendation(a, n)
+        agg_table.add_row(
+            f"{tid} {a['name']}",
+            str(a["confirm"]), str(a["disconfirm"]), str(a["inconclusive"]),
+            rec,
+        )
+    console.print()
+    console.print(agg_table)
+
+    # Detector-level recommendation
+    overall_counts = {"likely_false_positive": 0, "weak_evidence": 0,
+                      "confirmed_with_caveat": 0, "supported": 0, "well_supported": 0}
+    for a in audits:
+        overall_counts[a.overall] += 1
+    bad = overall_counts["likely_false_positive"] + overall_counts["weak_evidence"]
+    good = overall_counts["supported"] + overall_counts["well_supported"]
+    if bad > good:
+        verdict = "[red bold]REVISE[/]: more signals lacked support than had it"
+    elif overall_counts["likely_false_positive"]:
+        verdict = "[yellow]TIGHTEN[/]: some signals look like false positives — add disconfirming guards"
+    elif good == n:
+        verdict = "[green]KEEP[/]: every audited signal is supported by adjacent data"
+    else:
+        verdict = "[yellow]MONITOR[/]: mixed evidence — re-run with more signals"
+    console.print(Panel(verdict, title="Detector recommendation"))
+
+    db.close()
+
+
+def _recommendation(agg: dict, n: int) -> str:
+    if agg["disconfirm"] > agg["confirm"]:
+        return "Test fails more than it passes — heuristic is unreliable"
+    if agg["disconfirm"] >= 1 and agg["confirm"] >= 1:
+        return "Mixed — investigate disconfirming cases"
+    if agg["confirm"] == n:
+        return "Holds across all signals"
+    if agg["inconclusive"] == n:
+        return "Need more data to evaluate"
+    return "Partial signal — keep observing"
+
+
 def cmd_status(args):
     db, repo = _setup(args.verbose)
     accounts = repo.list_accounts()
@@ -340,6 +467,10 @@ def main():
     p_audit = sub.add_parser("audit", help="Deep audit of one account (LLM)")
     p_audit.add_argument("account_id")
 
+    p_validate = sub.add_parser("validate", help="Run disconfirmation harness against a detector")
+    p_validate.add_argument("detector", help="Detector key (e.g., brand_nonbrand)")
+    p_validate.add_argument("--show-evidence", action="store_true", help="Print per-test evidence rows")
+
     sub.add_parser("status", help="System status")
 
     args = parser.parse_args()
@@ -353,6 +484,7 @@ def main():
         "patterns": cmd_patterns,
         "episodes": cmd_episodes,
         "audit": cmd_audit,
+        "validate": cmd_validate,
         "status": cmd_status,
     }
 

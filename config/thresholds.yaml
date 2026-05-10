@@ -1,0 +1,117 @@
+# BrightMatter detector thresholds.
+#
+# Every threshold MUST cite a research source. If you can't cite it, don't add it.
+# Re-run `python -m brightmatter validate <detector>` after any change to confirm
+# the thresholds still produce defensible signals.
+#
+# Schema:
+#   detectors.<key>.defaults       — flat dict of threshold values
+#   detectors.<key>.sources        — list of {threshold, value, rationale, source}
+#                                    (one entry per non-trivial threshold; ground every
+#                                    number in research or harness evidence)
+#   detectors.<key>.overrides      — list of {when, <overridden values>, rationale, source}
+#                                    `when` matches on business_type / spend_tier;
+#                                    overridden values replace defaults for matching accounts
+
+version: 1
+last_reviewed: 2026-05-10
+
+detectors:
+
+  brand_nonbrand_contamination:
+    description: >
+      Account-level blended ROAS hides poor non-brand performance. Identifies
+      accounts where strong brand-search performance is masking a structurally
+      unprofitable non-brand campaign. NOTE: this is a structural decomposition
+      of a weighted average, not a causal claim — see research/patterns for
+      why the "mask" framing can mislead when brand ROAS is implausibly high.
+
+    defaults:
+      window_days: 30
+      min_brand_cost_30d: 100
+      min_nonbrand_cost_30d: 100
+      min_brand_conversions_30d: 10
+      min_nonbrand_conversions_30d: 10
+      brand_roas_min: 10
+      brand_roas_max: 25
+      nonbrand_roas_max: 2.0
+      blended_roas_min: 5
+      brand_token_match_pct_min: 0.30
+
+    sources:
+      - threshold: min_brand_cost_30d
+        value: 100
+        rationale: >
+          Minimum spend floor to ensure ROAS arithmetic is meaningful.
+          Below $100/30d, single-conversion noise dominates.
+        source: implementation default (legacy detector)
+
+      - threshold: min_nonbrand_conversions_30d
+        value: 10
+        rationale: >
+          With fewer than 10 conversions in 30 days, ROAS estimates are
+          dominated by statistical noise. Roadway AI / Digital4Startups
+          consensus is 30 conversions/month for reliable bid optimization;
+          we use 10 as a softer floor below which a "low non-brand ROAS"
+          claim is indistinguishable from random variance.
+        source: research/benchmarks/industry-benchmarks.md (Smart Bidding Transition Thresholds, Roadway AI 30/month minimum)
+
+      - threshold: brand_roas_max
+        value: 25
+        rationale: >
+          Brand ROAS above 25x in ecommerce is implausible without conversion-value
+          inflation (offline imports, LTV blending, double-counting). Vallaeys
+          (Tier 1) notes 47% of stuck Smart Bidding campaigns trace to broken
+          conversion tracking. Above this ceiling, the brand-vs-nonbrand gap is
+          partly an attribution artifact rather than real campaign contamination.
+          Confirmed by harness disconfirmation 2026-05-10 (MacKenzie-Childs:
+          brand_roas=40.9x, only 21 nonbrand conversions, claim was unsafe).
+        source: research/experts/tier1-expert-frameworks.md (Vallaeys conversion-tracking incidence); harness audit 2026-05-10
+
+      - threshold: nonbrand_roas_max
+        value: 2.0
+        rationale: >
+          Non-brand ROAS below 2x is the "underperformance" half of the
+          contamination claim. Lolk and Geddes both treat 2x as the rough
+          break-even line for non-brand search after factoring margin and CAC.
+        source: research/experts/tier1-expert-frameworks.md (Lolk profitability framework, Geddes structural rules)
+
+      - threshold: blended_roas_min
+        value: 5
+        rationale: >
+          Blended ROAS above 5x while non-brand sits below 2x is the
+          definitional "masking" condition. Aaron Levy's diminishing-returns
+          framework explicitly calls out blended ROAS as the metric most
+          likely to hide marginal-spend losses.
+        source: research/benchmarks/industry-benchmarks.md (Aaron Levy diminishing-returns framework)
+
+      - threshold: brand_token_match_pct_min
+        value: 0.30
+        rationale: >
+          Campaign-name heuristics (LIKE '%brand%') misfire on competitor-defense
+          campaigns and brand-misspelling campaigns. If a campaign labeled "brand"
+          has fewer than 30% of its keywords containing actual brand tokens, the
+          label is unreliable and the contamination claim cannot be made.
+          Geddes ranks match-type/naming contamination as the #1 structural flaw.
+        source: research/experts/tier1-expert-frameworks.md (Geddes naming/match-type contamination, Lolk SQR primacy)
+
+    overrides:
+      - when:
+          business_type: local
+        nonbrand_roas_max: 0.5
+        rationale: >
+          Local services (plumbing, dental, HVAC) draw 75-85% of paid revenue
+          from brand search. Non-brand campaigns in this vertical are
+          discovery/awareness, not the profit center. A 1.5x non-brand ROAS
+          here is normal, not pathological — only fire when non-brand is
+          genuinely below break-even (<0.5x).
+        source: research/experts/tier2-expert-insights.md (Lolk local-services brand dominance)
+
+      - when:
+          business_type: lead_gen
+        skip: true
+        rationale: >
+          Lead-gen accounts often track form fills without conversion_value.
+          ROAS-based contamination detection is meaningless without revenue
+          attribution. Skip until a CPA-based variant is implemented.
+        source: research/benchmarks/industry-benchmarks.md (CVR/CPL framework; lead gen lacks revenue)

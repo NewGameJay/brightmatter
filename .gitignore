@@ -9,3 +9,5 @@ build/
 .ruff_cache/
 *.duckdb
 .cursor/
+.DS_Store
+decks/

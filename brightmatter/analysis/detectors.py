@@ -244,44 +244,148 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
 # Research: Brand ROAS >10x while non-brand <2x in blended reporting = inflated metrics
 
 def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
-    """Detect accounts where blended ROAS hides poor non-brand performance."""
-    rows = db.fetchall("""
+    """Detect accounts where blended ROAS co-occurs with low non-brand ROAS.
+
+    Thresholds load from config/thresholds.yaml (with vertical/tier overrides).
+    Inline guards suppress obvious false positives the harness flagged:
+      - low non-brand conversion volume → ROAS estimate is statistical noise
+      - implausibly high brand ROAS    → likely value-inflation, not contamination
+      - naming heuristic fails          → 'brand' campaign isn't actually brand
+    When a guard fires, we emit `roas_contamination_unsafe` instead of suppressing
+    silently, so the engine remains observable.
+    """
+    from brightmatter.thresholds import effective_thresholds
+    from brightmatter.validation.brand_nonbrand import (
+        brand_token_pct_per_campaign,
+        brand_tokens_for_account,
+    )
+
+    # Pull candidates with a permissive SQL pass — apply per-account thresholds
+    # in Python so vertical/tier overrides can tighten or loosen as configured.
+    candidates = db.fetchall("""
         WITH by_type AS (
-            SELECT account_id, campaign_name,
-                   CASE WHEN lower(campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label,
-                   sum(conversion_value) as value,
-                   sum(cost_micros) / 1000000.0 as cost
-            FROM daily_metrics
-            WHERE date >= current_date - 30
-            GROUP BY account_id, campaign_name,
-                     CASE WHEN lower(campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END
+            SELECT dm.account_id, dm.campaign_name,
+                   CASE WHEN lower(dm.campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label,
+                   sum(dm.conversion_value) as value,
+                   sum(dm.cost_micros) / 1000000.0 as cost,
+                   sum(dm.conversions) as convs
+            FROM daily_metrics dm
+            WHERE dm.date >= current_date - 30
+            GROUP BY dm.account_id, dm.campaign_name,
+                     CASE WHEN lower(dm.campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END
         ),
-        account_roas AS (
+        account_rollup AS (
             SELECT account_id,
-                   sum(CASE WHEN label = 'brand' THEN value ELSE 0 END) /
-                       NULLIF(sum(CASE WHEN label = 'brand' THEN cost ELSE 0 END), 0) as brand_roas,
-                   sum(CASE WHEN label = 'nonbrand' THEN value ELSE 0 END) /
-                       NULLIF(sum(CASE WHEN label = 'nonbrand' THEN cost ELSE 0 END), 0) as nonbrand_roas,
-                   sum(value) / NULLIF(sum(cost), 0) as blended_roas
+                   sum(CASE WHEN label = 'brand'    THEN value ELSE 0 END) as brand_value,
+                   sum(CASE WHEN label = 'brand'    THEN cost  ELSE 0 END) as brand_cost,
+                   sum(CASE WHEN label = 'brand'    THEN convs ELSE 0 END) as brand_convs,
+                   sum(CASE WHEN label = 'nonbrand' THEN value ELSE 0 END) as nonbrand_value,
+                   sum(CASE WHEN label = 'nonbrand' THEN cost  ELSE 0 END) as nonbrand_cost,
+                   sum(CASE WHEN label = 'nonbrand' THEN convs ELSE 0 END) as nonbrand_convs,
+                   sum(value) as total_value,
+                   sum(cost)  as total_cost
             FROM by_type
             GROUP BY account_id
-            HAVING sum(CASE WHEN label = 'brand' THEN cost ELSE 0 END) > 100
-               AND sum(CASE WHEN label = 'nonbrand' THEN cost ELSE 0 END) > 100
         )
-        SELECT * FROM account_roas
-        WHERE brand_roas > 10 AND nonbrand_roas < 2 AND blended_roas > 5
+        SELECT ar.account_id, a.business_type, a.spend_tier, a.account_name,
+               ar.brand_value, ar.brand_cost, ar.brand_convs,
+               ar.nonbrand_value, ar.nonbrand_cost, ar.nonbrand_convs,
+               ar.total_value, ar.total_cost
+        FROM account_rollup ar
+        LEFT JOIN accounts a USING (account_id)
+        WHERE ar.brand_cost > 0 AND ar.nonbrand_cost > 0
     """)
-    signals = []
-    for r in rows:
-        signals.append(Signal(
-            signal_id=_id(), account_id=r[0],
-            domain=PatternDomain.BRANDED_SEARCH,
-            signal_type="roas_contamination", severity=Severity.WARNING,
-            value=r[3], threshold=5.0,
-            message=f"Blended ROAS {r[3]:.1f}x masks non-brand ROAS of {r[2]:.1f}x (brand ROAS = {r[1]:.1f}x)",
-            data={"brand_roas": r[1], "nonbrand_roas": r[2], "blended_roas": r[3]},
-            detected_at=_now(),
-        ))
+
+    signals: list[Signal] = []
+    for (acct_id, biz_type, spend_tier, acct_name,
+         b_val, b_cost, b_convs,
+         nb_val, nb_cost, nb_convs,
+         tot_val, tot_cost) in candidates:
+
+        th = effective_thresholds(
+            "brand_nonbrand_contamination",
+            business_type=biz_type, spend_tier=spend_tier,
+        )
+        if th is None:
+            continue  # override said skip (e.g., lead_gen)
+
+        if b_cost < th["min_brand_cost_30d"] or nb_cost < th["min_nonbrand_cost_30d"]:
+            continue
+
+        brand_roas    = (b_val / b_cost)   if b_cost   else 0
+        nonbrand_roas = (nb_val / nb_cost) if nb_cost  else 0
+        blended_roas  = (tot_val / tot_cost) if tot_cost else 0
+
+        # Core threshold gate
+        if not (brand_roas    > th["brand_roas_min"]
+                and nonbrand_roas < th["nonbrand_roas_max"]
+                and blended_roas  > th["blended_roas_min"]):
+            continue
+
+        # Inline disconfirmation guards — failing any → unsafe variant
+        guard_failures: list[str] = []
+        if (nb_convs or 0) < th["min_nonbrand_conversions_30d"]:
+            guard_failures.append(
+                f"non-brand has only {nb_convs:.0f} convs in 30d "
+                f"(<{th['min_nonbrand_conversions_30d']}); ROAS is statistical noise"
+            )
+        if brand_roas > th["brand_roas_max"]:
+            guard_failures.append(
+                f"brand ROAS {brand_roas:.1f}x exceeds plausibility cap "
+                f"({th['brand_roas_max']}x); likely value inflation, not contamination"
+            )
+
+        # Naming-heuristic check — only when keyword data is present
+        tokens = brand_tokens_for_account(acct_name or "")
+        if tokens:
+            pct_by_campaign = brand_token_pct_per_campaign(db, acct_id, tokens)
+            mislabeled = []
+            for name, pct in pct_by_campaign.items():
+                if "brand" in name.lower() and pct < th["brand_token_match_pct_min"]:
+                    mislabeled.append(f"'{name}' has {pct:.0%} brand-token kws")
+            if mislabeled:
+                guard_failures.append(
+                    "naming heuristic unreliable: " + "; ".join(mislabeled[:2])
+                )
+
+        common_data = {
+            "brand_roas":    brand_roas,
+            "nonbrand_roas": nonbrand_roas,
+            "blended_roas":  blended_roas,
+            "brand_convs":   b_convs,
+            "nonbrand_convs": nb_convs,
+            "thresholds_used": th,
+            "business_type": biz_type,
+        }
+
+        if guard_failures:
+            signals.append(Signal(
+                signal_id=_id(), account_id=acct_id,
+                domain=PatternDomain.BRANDED_SEARCH,
+                signal_type="roas_contamination_unsafe", severity=Severity.INFO,
+                value=blended_roas, threshold=th["blended_roas_min"],
+                message=(
+                    f"Pattern threshold met (blended {blended_roas:.1f}x, "
+                    f"non-brand {nonbrand_roas:.1f}x, brand {brand_roas:.1f}x) but "
+                    f"{len(guard_failures)} disconfirmation guard(s) caught it: "
+                    + " | ".join(guard_failures)
+                ),
+                data={**common_data, "guard_failures": guard_failures},
+                detected_at=_now(),
+            ))
+        else:
+            signals.append(Signal(
+                signal_id=_id(), account_id=acct_id,
+                domain=PatternDomain.BRANDED_SEARCH,
+                signal_type="roas_contamination", severity=Severity.WARNING,
+                value=blended_roas, threshold=th["blended_roas_min"],
+                message=(
+                    f"Blended ROAS {blended_roas:.1f}x co-occurs with non-brand "
+                    f"ROAS of {nonbrand_roas:.1f}x (brand ROAS = {brand_roas:.1f}x)"
+                ),
+                data=common_data,
+                detected_at=_now(),
+            ))
     return signals
 
 
