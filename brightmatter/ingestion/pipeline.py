@@ -179,70 +179,63 @@ class IngestionPipeline:
         return classified
 
     def _classify_account(self, account_id: str) -> tuple[str, str]:
-        """Infer business type from signals in the data."""
-        has_shopping = self.repo.db.fetchone(
-            "SELECT count(*) FROM daily_metrics WHERE account_id = ? AND campaign_type = 'SHOPPING'",
-            [account_id],
-        )
-        has_pmax = self.repo.db.fetchone(
-            "SELECT count(*) FROM daily_metrics WHERE account_id = ? AND campaign_type = 'PERFORMANCE_MAX'",
-            [account_id],
+        """Classify an account via brightmatter.ingestion.classifier.
+
+        The previous bare-substring heuristic produced widely-wrong results
+        (e.g. `competitor` → pets, `MCAT` → pets, `AddToCart` → automotive).
+        The new classifier uses word-boundary regex, account-name as primary
+        signal, and conversion-category counts for business_type.
+        """
+        from brightmatter.ingestion.classifier import (
+            ClassificationInputs,
+            classify,
         )
 
-        conv_names = self.repo.db.fetchall(
+        acct = self.repo.db.fetchone(
+            "SELECT account_name, website_url FROM accounts WHERE account_id = ?",
+            [account_id],
+        )
+        account_name = (acct[0] if acct else "") or ""
+        website_url = (acct[1] if acct else "") or ""
+
+        # Optional: fetched website title/description (from account_web_meta).
+        # Missing rows are fine — the classifier handles empty inputs.
+        web_meta = self.repo.db.fetchone(
+            "SELECT title, description FROM account_web_meta WHERE account_id = ?",
+            [account_id],
+        )
+        title_text = (web_meta[0] if web_meta else "") or ""
+        description_text = (web_meta[1] if web_meta else "") or ""
+
+        conv_rows = self.repo.db.fetchall(
             "SELECT action_name, category FROM conversion_actions WHERE account_id = ? AND status = 'ENABLED'",
             [account_id],
         )
+        conversions = [((r[0] or ""), (r[1] or "")) for r in conv_rows]
 
-        campaign_names = self.repo.db.fetchall(
+        camp_rows = self.repo.db.fetchall(
             "SELECT DISTINCT campaign_name FROM daily_metrics WHERE account_id = ? AND status = 'ENABLED'",
             [account_id],
         )
-        all_names = " ".join((n[0] or "") for n in campaign_names).lower()
-        all_conv = " ".join((n[0] or "") + " " + (n[1] or "") for n in conv_names).lower()
+        campaign_names = [(r[0] or "") for r in camp_rows]
 
-        shopping_count = has_shopping[0] if has_shopping else 0
-        is_ecomm = shopping_count > 0 or "purchase" in all_conv or "shopping" in all_names
-        is_leadgen = any(w in all_conv for w in ["lead", "form", "phone", "call", "appointment", "quote"])
-        is_saas = any(w in all_conv for w in ["signup", "trial", "demo", "subscribe"])
-        is_local = any(w in all_conv for w in ["directions", "store visit", "local"])
-        is_b2b = any(w in all_names for w in ["b2b", "enterprise", "commercial"])
+        type_rows = self.repo.db.fetchall(
+            "SELECT campaign_type, count(*) FROM daily_metrics WHERE account_id = ? GROUP BY campaign_type",
+            [account_id],
+        )
+        campaign_types = {(r[0] or "UNKNOWN"): r[1] for r in type_rows}
 
-        if is_ecomm:
-            return "ecommerce", self._infer_vertical(all_names, all_conv)
-        if is_leadgen:
-            return "lead_gen", self._infer_vertical(all_names, all_conv)
-        if is_saas:
-            return "saas", "software"
-        if is_local:
-            return "local", self._infer_vertical(all_names, all_conv)
-        if is_b2b:
-            return "b2b", self._infer_vertical(all_names, all_conv)
-        return "unknown", ""
-
-    def _infer_vertical(self, names: str, conv: str) -> str:
-        verticals = {
-            "dental": ["dental", "dentist", "orthodont"],
-            "legal": ["law", "legal", "attorney"],
-            "medical": ["medical", "doctor", "health", "clinic", "surgery", "derma", "therapy"],
-            "fitness": ["gym", "fitness", "workout"],
-            "beauty": ["beauty", "skincare", "cosmetic", "hair"],
-            "food_beverage": ["food", "coffee", "tea", "restaurant", "nutrition", "snack"],
-            "apparel": ["fashion", "clothing", "apparel", "shirt", "shoe", "wear"],
-            "home_goods": ["furniture", "home", "decor", "garden", "lighting", "cookware"],
-            "pets": ["pet", "dog", "cat", "animal"],
-            "education": ["school", "education", "tutor", "learning", "academy"],
-            "finance": ["insurance", "financial", "credit", "investment", "gold"],
-            "real_estate": ["real estate", "property", "apartment", "housing"],
-            "automotive": ["auto", "car", "vehicle", "motorcycle"],
-            "outdoor": ["outdoor", "camping", "hiking", "golf", "pool", "spa"],
-            "software": ["software", "app", "saas", "tech", "analytics"],
-        }
-        combined = names + " " + conv
-        for v, keywords in verticals.items():
-            if any(k in combined for k in keywords):
-                return v
-        return ""
+        result = classify(ClassificationInputs(
+            account_id=account_id,
+            account_name=account_name,
+            website_url=website_url,
+            title_text=title_text,
+            description_text=description_text,
+            campaign_names=campaign_names,
+            campaign_types=campaign_types,
+            conversions=conversions,
+        ))
+        return result.business_type.value, result.vertical
 
     def ingest_keyword_counts(self, account_ids: list[str] | None = None) -> dict[str, int]:
         """Pull keyword + negative keyword counts per campaign."""

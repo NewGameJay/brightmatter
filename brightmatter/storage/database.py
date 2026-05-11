@@ -166,6 +166,15 @@ CREATE TABLE IF NOT EXISTS conversion_actions (
     PRIMARY KEY (account_id, action_id)
 );
 
+CREATE TABLE IF NOT EXISTS account_web_meta (
+    account_id   TEXT PRIMARY KEY,
+    title        TEXT,
+    description  TEXT,
+    status_code  INTEGER,
+    fetched_at   TIMESTAMP DEFAULT current_timestamp,
+    error        TEXT
+);
+
 CREATE TABLE IF NOT EXISTS episodes (
     episode_id        TEXT PRIMARY KEY,
     account_id        TEXT NOT NULL,

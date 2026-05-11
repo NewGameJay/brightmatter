@@ -16,6 +16,7 @@ class BusinessType(str, Enum):
     LOCAL = "local"
     B2B = "b2b"
     APP = "app"
+    NONPROFIT = "nonprofit"
     UNKNOWN = "unknown"
 
 

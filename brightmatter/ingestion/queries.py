@@ -163,6 +163,22 @@ FROM campaign_asset
 WHERE campaign.status = 'ENABLED'
 """
 
+# ── Landing-page URLs (for account classification) ──
+#
+# Pulls final URL hostnames for every ad in every active ad group, grouped at
+# the customer level. The dominant non-Google hostname per account is used as
+# the canonical website signal for the classifier.
+
+AD_LANDING_PAGES = """
+SELECT
+  ad_group_ad.ad.final_urls,
+  ad_group_ad.status
+FROM ad_group_ad
+WHERE ad_group_ad.status != 'REMOVED'
+  AND campaign.status != 'REMOVED'
+"""
+
+
 # ── Account discovery ──
 
 ACCOUNT_INFO = """

@@ -1,0 +1,193 @@
+# Manual classification overrides.
+#
+# When the rule-based classifier in brightmatter.ingestion.classifier produces
+# a wrong or empty result for an account, capture the authoritative answer
+# here (with source URL). These overrides win over any rule output.
+#
+# Add new entries when:
+#   1. A human or external research has confirmed the actual business
+#   2. The brand name uses an industry term as marketing positioning
+#      (e.g. "TCG Wellness" sells hot tub covers — `wellness` is brand voice,
+#      not their industry)
+#   3. The account name carries no industry signal at all and rules can't fire
+#
+# Schema:
+#   <account_id>:
+#     business_type: ecommerce | lead_gen | saas | local | b2b | app | nonprofit
+#     vertical: <string>
+#     website: <url>
+#     source: <where the classification was verified — URL or "manual">
+#     reviewed: <YYYY-MM-DD>
+
+version: 1
+last_reviewed: 2026-05-10
+
+overrides:
+
+  # ── Confirmed via external research 2026-05-10 ──
+
+  "7134762004":  # Agency Revolution
+    business_type: saas
+    vertical: software
+    website: agencyrevolution.com
+    source: https://agencyrevolution.com/
+    reviewed: 2026-05-10
+    note: "Insurance-agency marketing automation SaaS (Vertafore brand)."
+
+  "8845806941":  # Better Life Partners
+    business_type: local
+    vertical: healthcare
+    website: betterlifepartners.com
+    source: https://betterlifepartners.com/
+    reviewed: 2026-05-10
+    note: "Addiction treatment clinics (OUD/AUD) across MA/ME/NH/NC."
+
+  "5267578433":  # Galaxy Home Recreation
+    business_type: local
+    vertical: pool_spa
+    website: galaxyhomerecreation.com
+    source: https://galaxyhomerecreation.com/
+    reviewed: 2026-05-10
+    note: "Oklahoma retailer: hot tubs, pools, patio, pool tables, grills."
+
+  "3130872631":  # Malta Dynamics
+    business_type: ecommerce
+    vertical: safety_industrial
+    website: maltadynamics.com
+    source: https://maltadynamics.com/
+    reviewed: 2026-05-10
+    note: "Fall-protection / industrial safety equipment manufacturer."
+
+  "6759739742":  # Noctrix
+    business_type: b2b
+    vertical: healthcare
+    website: noctrixhealth.com
+    source: https://noctrixhealth.com/
+    reviewed: 2026-05-10
+    note: "Medical-device maker (Nidra TOMAC for RLS); acquired by ResMed."
+
+  "3092902096":  # SDS - strat
+    business_type: ecommerce
+    vertical: pool_spa
+    website: offers.sundancespas.com
+    source: google_ads_final_url
+    reviewed: 2026-05-10
+    note: |
+      Earlier guess (Strategic Digital Services) was wrong. The Google Ads
+      ad final_urls point to offers.sundancespas.com — this is a Sundance Spas
+      offers/affiliate account. SDS = Sundance Spas.
+
+  "8234428633":  # Your Era
+    business_type: ecommerce
+    vertical: apparel
+    website: yourera.store
+    source: https://yourera.store/
+    reviewed: 2026-05-10
+    note: "Shopify-based streetwear/apparel."
+
+  # ── Brand-name edge cases (rule-based got it wrong) ──
+
+  "7011508859":  # The Cover Guy - TCG Wellness
+    business_type: ecommerce
+    vertical: pool_spa
+    website: thecoverguy.com
+    source: https://thecoverguy.com/
+    reviewed: 2026-05-10
+    note: |
+      Sells custom hot tub & spa covers. The "Wellness" suffix in the brand name
+      is marketing positioning, not their industry — rules misfired healthcare.
+
+  # ── Identified from Google Ads final_urls 2026-05-10 ──
+
+  "1374705848":  # JHT - Strat
+    business_type: lead_gen
+    vertical: pool_spa
+    website: jacuzzi.com
+    source: google_ads_final_url
+    reviewed: 2026-05-10
+    note: |
+      Final URL points to jacuzzi.com — this is a Jacuzzi (hot tub / spa)
+      lead-gen account. "JHT" likely = Jacuzzi Hot Tubs.
+
+  "5639723347":  # JECT
+    business_type: lead_gen
+    vertical: medical_cosmetic
+    website: ject.us
+    source: google_ads_final_url
+    reviewed: 2026-05-10
+    note: |
+      JECT is a medspa / aesthetics brand offering injectables (Botox,
+      filler). Mixed PURCHASE (gift cards) + BOOK_APPOINTMENT conversions,
+      with appointment booking as the dominant lead path.
+
+  "7631684814":  # Hawke Media - Internal Google Ads
+    business_type: b2b
+    vertical: agency_marketing
+    website: hawkemedia.com
+    source: google_ads_final_url
+    reviewed: 2026-05-10
+    note: |
+      Internal Google Ads account for Hawke Media itself (the marketing
+      agency that owns the MCC running all 454 accounts). They drive leads
+      for their own services.
+
+  # ── Filling missing verticals on already-correct business_types ──
+
+  "3428214078":  # APL New-Clean for 2019
+    business_type: ecommerce
+    vertical: apparel
+    website: athleticpropulsionlabs.com
+    source: google_ads_final_url
+    reviewed: 2026-05-10
+    note: |
+      APL = Athletic Propulsion Labs (premium athletic footwear). Identified
+      from ad_group_ad.ad.final_urls after URL ingestion. The "New-Clean for
+      2019" suffix was internal cohort/account-segmentation naming.
+
+  "9520572778":  # Corwin Master CID
+    business_type: local
+    vertical: automotive
+    website: corwinauto.com
+    source: https://www.corwinauto.com/
+    reviewed: 2026-05-10
+    note: "Corwin Automotive Group — multi-brand auto dealer network. 'Master CID' = internal naming."
+
+  "9104393180":  # KK/TH - AvidMax
+    business_type: ecommerce
+    vertical: outdoors_fishing
+    website: avidmax.com
+    source: https://www.avidmax.com/
+    reviewed: 2026-05-10
+    note: "Online fly fishing gear and apparel."
+
+  "6669071127":  # Medley
+    business_type: ecommerce
+    vertical: furniture
+    website: medleyhome.com
+    source: https://medleyhome.com/
+    reviewed: 2026-05-10
+    note: "DTC sustainable made-to-order furniture."
+
+  "1795119737":  # TRUFIT Customs
+    business_type: ecommerce
+    vertical: sports_dental
+    website: trufitcustoms.com
+    source: https://trufitcustoms.com/
+    reviewed: 2026-05-10
+    note: "3D-scanned custom mouthguards / nightguards / insoles for athletes."
+
+  "2171365431":  # Teak Warehouse USA
+    business_type: ecommerce
+    vertical: furniture
+    website: teakwarehouse.com
+    source: https://teakwarehouse.com/
+    reviewed: 2026-05-10
+    note: "Premium teak outdoor patio furniture, residential + commercial."
+
+  "9384530084":  # Voomi Supply - 3
+    business_type: ecommerce
+    vertical: industrial_supply
+    website: voomisupply.com
+    source: https://voomisupply.com/
+    reviewed: 2026-05-10
+    note: "Online distributor of HVAC / plumbing / electrical supplies."

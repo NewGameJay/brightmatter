@@ -11,3 +11,4 @@ build/
 .cursor/
 .DS_Store
 decks/
+data/classification_traces.json
