@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
+from brightmatter.thresholds import effective_thresholds
 
 
 def _now():
@@ -128,40 +129,46 @@ def detect_low_quality_scores(db: Database) -> list[Signal]:
 # Research: CPA rising >3x historical average = investigate (Vallaeys Rule Engine)
 
 def detect_cpa_spikes(db: Database) -> list[Signal]:
-    """Detect campaigns where recent CPA exceeds 3x their 30-day average."""
-    rows = db.fetchall("""
+    """Detect campaigns where recent CPA exceeds N× their 30-day average.
+
+    Thresholds: config/thresholds.yaml → cpa_spike.
+    """
+    th = effective_thresholds("cpa_spike")
+    rows = db.fetchall(f"""
         WITH recent AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as recent_cpa,
                    sum(conversions) as recent_conv
             FROM daily_metrics
-            WHERE date >= current_date - 7
+            WHERE date >= current_date - {int(th['recent_window_days'])}
             GROUP BY account_id, campaign_id, campaign_name
-            HAVING sum(conversions) > 1
+            HAVING sum(conversions) > {float(th['recent_conv_min'])}
         ),
         baseline AS (
             SELECT account_id, campaign_id,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as baseline_cpa
             FROM daily_metrics
-            WHERE date >= current_date - 30 AND date < current_date - 7
+            WHERE date >= current_date - {int(th['baseline_window_days'])}
+              AND date < current_date - {int(th['recent_window_days'])}
             GROUP BY account_id, campaign_id
-            HAVING sum(conversions) > 3
+            HAVING sum(conversions) > {float(th['baseline_conv_min'])}
         )
         SELECT r.account_id, r.campaign_id, r.campaign_name,
                r.recent_cpa / 1000000.0 as recent_cpa_dollars,
                b.baseline_cpa / 1000000.0 as baseline_cpa_dollars
         FROM recent r
         JOIN baseline b ON r.account_id = b.account_id AND r.campaign_id = b.campaign_id
-        WHERE r.recent_cpa > b.baseline_cpa * 3
+        WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])}
     """)
     signals = []
+    mult = th['recent_cpa_multiplier']
     for r in rows:
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.BIDDING_STRATEGY,
             signal_type="cpa_spike", severity=Severity.CRITICAL,
-            value=r[3], threshold=r[4] * 3,
-            message=f"Campaign '{r[2]}' CPA spiked to ${r[3]:.2f} (3x+ baseline of ${r[4]:.2f})",
+            value=r[3], threshold=r[4] * mult,
+            message=f"Campaign '{r[2]}' CPA spiked to ${r[3]:.2f} ({mult:g}x+ baseline of ${r[4]:.2f})",
             data={"campaign_id": r[1], "recent_cpa": r[3], "baseline_cpa": r[4]},
             detected_at=_now(),
         ))
@@ -172,26 +179,31 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
 # Research: budget-lost IS > 20% = under-spending opportunity
 
 def detect_impression_share_loss(db: Database) -> list[Signal]:
-    """Flag campaigns losing >35% impression share to budget with meaningful spend."""
-    rows = db.fetchall("""
+    """Flag campaigns losing >X% impression share to budget with meaningful spend.
+
+    Thresholds: config/thresholds.yaml → budget_limited_is.
+    """
+    th = effective_thresholds("budget_limited_is")
+    rows = db.fetchall(f"""
         SELECT account_id, campaign_id, campaign_name,
                avg(search_budget_lost_is) as avg_budget_lost,
                avg(search_rank_lost_is) as avg_rank_lost,
                avg(search_impression_share) as avg_is
         FROM daily_metrics
-        WHERE date >= current_date - 7
+        WHERE date >= current_date - {int(th['window_days'])}
           AND search_budget_lost_is IS NOT NULL
         GROUP BY account_id, campaign_id, campaign_name
-        HAVING avg(search_budget_lost_is) > 0.35
-           AND sum(cost_micros) > 500000000
+        HAVING avg(search_budget_lost_is) > {float(th['avg_budget_lost_is_min'])}
+           AND sum(cost_micros) > {int(th['total_cost_micros_min'])}
     """)
     signals = []
+    bl_min = th['avg_budget_lost_is_min']
     for r in rows:
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.BIDDING_STRATEGY,
             signal_type="budget_limited_is", severity=Severity.WARNING,
-            value=r[3], threshold=0.35,
+            value=r[3], threshold=bl_min,
             message=f"Campaign '{r[2]}' losing {r[3]:.0%} impression share to budget (IS = {r[5]:.0%})",
             data={"campaign_id": r[1], "budget_lost_is": r[3], "rank_lost_is": r[4], "avg_is": r[5]},
             detected_at=_now(),
@@ -203,17 +215,24 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
 # Research: CVR drop >30% week-over-week = investigate (landing page or tracking issue)
 
 def detect_cvr_anomalies(db: Database) -> list[Signal]:
-    """Detect campaigns with CVR dropping >30% week-over-week."""
-    rows = db.fetchall("""
+    """Detect campaigns with CVR dropping >X% week-over-week with volume floor.
+
+    Thresholds: config/thresholds.yaml → cvr_drop.
+    """
+    th = effective_thresholds("cvr_drop")
+    cur_w = int(th['current_window_days'])
+    pri_w = int(th['prior_window_days'])
+    window = cur_w + pri_w
+    rows = db.fetchall(f"""
         WITH weekly AS (
             SELECT account_id, campaign_id, campaign_name,
-                   CASE WHEN date >= current_date - 7 THEN 'current' ELSE 'prior' END as period,
+                   CASE WHEN date >= current_date - {cur_w} THEN 'current' ELSE 'prior' END as period,
                    sum(conversions) as conv,
                    sum(clicks) as clicks
             FROM daily_metrics
-            WHERE date >= current_date - 14
+            WHERE date >= current_date - {window}
             GROUP BY account_id, campaign_id, campaign_name,
-                     CASE WHEN date >= current_date - 7 THEN 'current' ELSE 'prior' END
+                     CASE WHEN date >= current_date - {cur_w} THEN 'current' ELSE 'prior' END
         )
         SELECT c.account_id, c.campaign_id, c.campaign_name,
                c.conv / NULLIF(c.clicks, 0) as current_cvr,
@@ -221,18 +240,20 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
         FROM weekly c
         JOIN weekly p ON c.account_id = p.account_id AND c.campaign_id = p.campaign_id
         WHERE c.period = 'current' AND p.period = 'prior'
-          AND p.clicks > 100 AND c.clicks > 100
-          AND p.conv > 10
-          AND p.conv / NULLIF(p.clicks, 0) > 0.01
-          AND c.conv / NULLIF(c.clicks, 0) < p.conv / NULLIF(p.clicks, 0) * 0.7
+          AND p.clicks > {int(th['prior_clicks_min'])}
+          AND c.clicks > {int(th['current_clicks_min'])}
+          AND p.conv > {float(th['prior_conv_min'])}
+          AND p.conv / NULLIF(p.clicks, 0) > {float(th['prior_cvr_min'])}
+          AND c.conv / NULLIF(c.clicks, 0) < p.conv / NULLIF(p.clicks, 0) * {float(th['cvr_drop_ratio'])}
     """)
     signals = []
+    ratio = th['cvr_drop_ratio']
     for r in rows:
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.LANDING_PAGE,
             signal_type="cvr_drop", severity=Severity.WARNING,
-            value=r[3] or 0, threshold=(r[4] or 0) * 0.7,
+            value=r[3] or 0, threshold=(r[4] or 0) * ratio,
             message=f"Campaign '{r[2]}' CVR dropped from {(r[4] or 0):.1%} to {(r[3] or 0):.1%} week-over-week",
             data={"campaign_id": r[1], "current_cvr": r[3], "prior_cvr": r[4]},
             detected_at=_now(),
@@ -434,27 +455,33 @@ def detect_pmax_channel_imbalance(db: Database) -> list[Signal]:
 # Research: Causal Chain #11 — auto-applied recs can silently degrade performance
 
 def detect_auto_applied_changes(db: Database) -> list[Signal]:
-    """Flag accounts with auto-applied changes in the last 30 days."""
-    rows = db.fetchall("""
+    """Flag accounts with auto-applied changes in the threshold window.
+
+    Thresholds: config/thresholds.yaml → auto_applied_changes.
+    """
+    th = effective_thresholds("auto_applied_changes")
+    window = int(th['window_days'])
+    crit = int(th['critical_count'])
+    rows = db.fetchall(f"""
         SELECT account_id, count(*) as auto_count,
                min(change_timestamp) as earliest,
                max(change_timestamp) as latest
         FROM change_events
         WHERE actor = 'auto_applied'
-          AND change_timestamp >= current_date - 30
+          AND change_timestamp >= current_date - {window}
         GROUP BY account_id
         HAVING count(*) > 0
         ORDER BY count(*) DESC
     """)
     signals = []
     for r in rows:
-        severity = Severity.CRITICAL if r[1] > 5 else Severity.WARNING
+        severity = Severity.CRITICAL if r[1] > crit else Severity.WARNING
         signals.append(Signal(
             signal_id=_id(), account_id=r[0],
             domain=PatternDomain.CAMPAIGN_STRUCTURE,
             signal_type="auto_applied_changes", severity=severity,
             value=float(r[1]), threshold=1.0,
-            message=f"{r[1]} auto-applied changes detected in last 30 days — review for unintended modifications",
+            message=f"{r[1]} auto-applied changes detected in last {window} days — review for unintended modifications",
             data={"count": r[1], "earliest": str(r[2]), "latest": str(r[3])},
             detected_at=_now(),
         ))
@@ -465,26 +492,32 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
 # Research: budget_lost_is > budget means campaigns can't spend what they want
 
 def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
-    """Flag campaigns consistently hitting budget cap (budget-lost IS > 30%)."""
-    rows = db.fetchall("""
+    """Flag campaigns consistently hitting budget cap.
+
+    Thresholds: config/thresholds.yaml → budget_capped.
+    """
+    th = effective_thresholds("budget_capped")
+    window = int(th['window_days'])
+    rows = db.fetchall(f"""
         SELECT account_id, campaign_id, campaign_name,
                avg(search_budget_lost_is) as avg_budget_lost,
                count(*) as days_checked
         FROM daily_metrics
-        WHERE date >= current_date - 14
+        WHERE date >= current_date - {window}
           AND search_budget_lost_is IS NOT NULL
-          AND search_budget_lost_is > 0.30
+          AND search_budget_lost_is > {float(th['avg_budget_lost_is_min'])}
         GROUP BY account_id, campaign_id, campaign_name
-        HAVING count(*) >= 7
+        HAVING count(*) >= {int(th['min_days_capped'])}
     """)
     signals = []
+    threshold = th['avg_budget_lost_is_min']
     for r in rows:
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.BIDDING_STRATEGY,
             signal_type="budget_capped", severity=Severity.INFO,
-            value=r[3], threshold=0.30,
-            message=f"Campaign '{r[2]}' budget-capped for {r[4]} of last 14 days (avg {r[3]:.0%} IS lost to budget)",
+            value=r[3], threshold=threshold,
+            message=f"Campaign '{r[2]}' budget-capped for {r[4]} of last {window} days (avg {r[3]:.0%} IS lost to budget)",
             data={"campaign_id": r[1], "avg_budget_lost_is": r[3], "days_capped": r[4]},
             detected_at=_now(),
         ))
@@ -495,25 +528,30 @@ def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
 # Research: Broad match + manual CPC = waste; tROAS with < 50 conv/month = insufficient data
 
 def detect_bidding_antipatterns(db: Database) -> list[Signal]:
-    """Flag known bidding anti-patterns from expert research."""
-    # Low-conversion campaigns on target strategies
-    rows = db.fetchall("""
+    """Flag campaigns on tCPA/tROAS without enough conversions to optimize.
+
+    Thresholds: config/thresholds.yaml → insufficient_conversions_for_strategy.
+    """
+    th = effective_thresholds("insufficient_conversions_for_strategy")
+    strategies_in = ", ".join(f"'{s}'" for s in th.get("strategies", []))
+    rows = db.fetchall(f"""
         SELECT account_id, campaign_id, campaign_name, bidding_strategy,
                sum(conversions) as monthly_conv
         FROM daily_metrics
-        WHERE date >= current_date - 30
-          AND bidding_strategy IN ('TARGET_CPA', 'TARGET_ROAS')
+        WHERE date >= current_date - {int(th['window_days'])}
+          AND bidding_strategy IN ({strategies_in})
         GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
-        HAVING sum(conversions) < 15
+        HAVING sum(conversions) < {float(th['monthly_conv_min'])}
     """)
     signals = []
+    minimum = th['monthly_conv_min']
     for r in rows:
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.BIDDING_STRATEGY,
             signal_type="insufficient_conversions_for_strategy", severity=Severity.WARNING,
-            value=r[4], threshold=30.0,
-            message=f"Campaign '{r[2]}' using {r[3]} with only {r[4]:.0f} conv/month (need 30+ for reliable optimization)",
+            value=r[4], threshold=float(minimum),
+            message=f"Campaign '{r[2]}' using {r[3]} with only {r[4]:.0f} conv/month (need {minimum:g}+ for reliable optimization)",
             data={"campaign_id": r[1], "strategy": r[3], "monthly_conversions": r[4]},
             detected_at=_now(),
         ))
@@ -569,16 +607,21 @@ def detect_suspicious_primary_conversions(db: Database) -> list[Signal]:
 # Research: Multiple primary actions = double-counting conversions
 
 def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
-    """Flag accounts with 3+ primary conversion actions (likely double-counting)."""
+    """Flag accounts with N+ primary conversion actions (likely double-counting).
+
+    Thresholds: config/thresholds.yaml → duplicate_primary_conversions.
+    """
+    th = effective_thresholds("duplicate_primary_conversions")
+    minimum = int(th['primary_count_min'])
     try:
-        rows = db.fetchall("""
+        rows = db.fetchall(f"""
             SELECT account_id, count(*) as primary_count,
                    string_agg(action_name, ', ') as names
             FROM conversion_actions
             WHERE primary_for_goal = true
               AND status = 'ENABLED'
             GROUP BY account_id
-            HAVING count(*) >= 3
+            HAVING count(*) >= {minimum}
         """)
     except Exception:
         return []
@@ -589,7 +632,7 @@ def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
             signal_id=_id(), account_id=r[0],
             domain=PatternDomain.LANDING_PAGE,
             signal_type="duplicate_primary_conversions", severity=Severity.WARNING,
-            value=float(r[1]), threshold=3.0,
+            value=float(r[1]), threshold=float(minimum),
             message=f"{r[1]} primary conversion actions — likely double-counting: {r[2][:100]}",
             data={"primary_count": r[1], "action_names": r[2]},
             detected_at=_now(),
@@ -632,13 +675,17 @@ def detect_missing_conversion_value(db: Database) -> list[Signal]:
 # Research: smec says <30 conv/month per campaign = unreliable. Lolk says 100+.
 
 def detect_over_segmentation(db: Database) -> list[Signal]:
-    """Flag accounts with many campaigns starving for conversion data."""
-    rows = db.fetchall("""
+    """Flag accounts with many campaigns starving for conversion data.
+
+    Thresholds: config/thresholds.yaml → over_segmentation.
+    """
+    th = effective_thresholds("over_segmentation")
+    rows = db.fetchall(f"""
         WITH campaign_conv AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(conversions) as monthly_conv
             FROM daily_metrics
-            WHERE date >= current_date - 30
+            WHERE date >= current_date - {int(th['window_days'])}
               AND status = 'ENABLED'
             GROUP BY account_id, campaign_id, campaign_name
         ),
@@ -646,19 +693,19 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
             SELECT account_id,
                    count(*) as total_campaigns,
                    sum(monthly_conv) as total_conv,
-                   sum(CASE WHEN monthly_conv < 30 THEN 1 ELSE 0 END) as starving_campaigns,
-                   sum(CASE WHEN monthly_conv < 30 THEN monthly_conv ELSE 0 END) as starving_conv
+                   sum(CASE WHEN monthly_conv < {float(th['per_campaign_conv_min'])} THEN 1 ELSE 0 END) as starving_campaigns,
+                   sum(CASE WHEN monthly_conv < {float(th['per_campaign_conv_min'])} THEN monthly_conv ELSE 0 END) as starving_conv
             FROM campaign_conv
             WHERE monthly_conv > 0
             GROUP BY account_id
-            HAVING count(*) >= 5
-               AND sum(monthly_conv) > 100
+            HAVING count(*) >= {int(th['account_campaigns_min'])}
+               AND sum(monthly_conv) > {float(th['account_total_conv_min'])}
         )
         SELECT account_id, total_campaigns, total_conv,
                starving_campaigns, starving_conv,
                starving_campaigns * 1.0 / total_campaigns as starving_pct
         FROM account_summary
-        WHERE starving_campaigns * 1.0 / total_campaigns > 0.5
+        WHERE starving_campaigns * 1.0 / total_campaigns > {float(th['starving_share_min'])}
     """)
     signals = []
     for r in rows:
@@ -918,18 +965,23 @@ def detect_cross_account_outlier(db: Database) -> list[Signal]:
 # Research: smec — PMax needs 30+ conv/month, 50-100 optimal
 
 def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
-    """Flag PMax campaigns with <30 conversions/month."""
-    rows = db.fetchall("""
+    """Flag PMax campaigns with insufficient conversions to optimize.
+
+    Thresholds: config/thresholds.yaml → pmax_low_conv_volume.
+    """
+    th = effective_thresholds("pmax_low_conv_volume")
+    minimum = th['monthly_conv_min']
+    rows = db.fetchall(f"""
         SELECT account_id, campaign_id, campaign_name,
                sum(conversions) as monthly_conv,
                sum(cost_micros) / 1000000.0 as monthly_cost
         FROM daily_metrics
-        WHERE date >= current_date - 30
+        WHERE date >= current_date - {int(th['window_days'])}
           AND campaign_type = 'PERFORMANCE_MAX'
           AND status = 'ENABLED'
         GROUP BY account_id, campaign_id, campaign_name
-        HAVING sum(conversions) < 30
-           AND sum(cost_micros) > 1000000000
+        HAVING sum(conversions) < {float(minimum)}
+           AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
     """)
     signals = []
     for r in rows:
@@ -937,8 +989,8 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.PERFORMANCE_MAX,
             signal_type="pmax_low_conv_volume", severity=Severity.WARNING,
-            value=r[3], threshold=30.0,
-            message=f"PMax '{r[2]}' has only {r[3]:.0f} conv/month on ${r[4]:,.0f} spend — needs 30+ for Smart Bidding to optimize",
+            value=r[3], threshold=float(minimum),
+            message=f"PMax '{r[2]}' has only {r[3]:.0f} conv/month on ${r[4]:,.0f} spend — needs {minimum:g}+ for Smart Bidding to optimize",
             data={"campaign_id": r[1], "monthly_conv": r[3], "monthly_cost": r[4]},
             detected_at=_now(),
         ))

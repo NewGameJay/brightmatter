@@ -115,3 +115,237 @@ detectors:
           ROAS-based contamination detection is meaningless without revenue
           attribution. Skip until a CPA-based variant is implemented.
         source: research/benchmarks/industry-benchmarks.md (CVR/CPL framework; lead gen lacks revenue)
+
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Detectors below are wired to read from YAML defaults only (Phase 1A).
+  # Vertical/tier overrides come in Phase 1B once benchmark data is embedded.
+  # ───────────────────────────────────────────────────────────────────────
+
+  budget_limited_is:
+    description: >
+      Search campaign losing >35% impression share to budget over the last 7
+      days with meaningful spend. Implicit claim: more budget would mean
+      more conversions. Harness disconfirms when rank-loss dominates,
+      conversion volume is too low, or budget is intentionally throttled.
+    defaults:
+      window_days: 7
+      avg_budget_lost_is_min: 0.35
+      total_cost_micros_min: 500000000  # $500 over the 7-day window
+    sources:
+      - threshold: avg_budget_lost_is_min
+        value: 0.35
+        rationale: >
+          Industry consensus: budget-lost-IS > 20% means the campaign is
+          throttling itself. We use 0.35 as a stricter "definitely material"
+          line consistent with pattern-detection-logic.md domain 3.
+        source: research/patterns/pattern-detection-logic.md (Impression Share / Budget Pressure)
+      - threshold: total_cost_micros_min
+        value: 500000000
+        rationale: >
+          $500 floor over 7 days ensures the IS metric is computed on
+          enough impressions to be reliable.
+        source: implementation default (legacy detector)
+    overrides: []
+
+  cvr_drop:
+    description: >
+      Campaign CVR dropped >30% week-over-week with sufficient volume both
+      weeks. Harness disconfirms when tracking changed, campaign config
+      shifted mid-period, or prior week was an outlier (regression to mean).
+    defaults:
+      current_window_days: 7
+      prior_window_days: 7
+      cvr_drop_ratio: 0.7        # current < prior * 0.7  (a 30% drop)
+      prior_clicks_min: 100
+      current_clicks_min: 100
+      prior_conv_min: 10
+      prior_cvr_min: 0.01        # prior CVR > 1% to suppress noise
+    sources:
+      - threshold: cvr_drop_ratio
+        value: 0.7
+        rationale: >
+          A 30% week-over-week CVR drop is the threshold expert audits use
+          to flag "investigate" (landing page, tracking, or competitive
+          changes). Geddes/Vallaeys both reference this cadence.
+        source: research/patterns/pattern-detection-logic.md (CVR Anomalies)
+      - threshold: prior_conv_min
+        value: 10
+        rationale: >
+          Below 10 conversions in a week, the CVR delta is dominated by
+          noise. Roadway AI uses ≥30/month for reliable bid optimization;
+          10/week is a softer floor for anomaly detection.
+        source: research/benchmarks/industry-benchmarks.md (Roadway AI thresholds)
+    overrides: []
+
+  cpa_spike:
+    description: >
+      Recent (7-day) CPA exceeds 3x the 30-day baseline with sufficient
+      conversions to back the claim. Harness disconfirms when a single
+      bad day spikes the average, bidding strategy was changed mid-period,
+      or AOV rose proportionally (higher CPA buys higher-value conversions).
+    defaults:
+      recent_window_days: 7
+      baseline_window_days: 30   # 8-30 days back from today
+      recent_cpa_multiplier: 3.0
+      recent_conv_min: 1
+      baseline_conv_min: 3
+    sources:
+      - threshold: recent_cpa_multiplier
+        value: 3.0
+        rationale: >
+          A 3x spike is the standard "this is real, not noise" line in
+          most audit frameworks. Smaller multiples generate too much false
+          signal in low-volume campaigns.
+        source: research/patterns/pattern-detection-logic.md (CPA Spikes)
+      - threshold: recent_conv_min
+        value: 1
+        rationale: >
+          We require at least 1 recent conversion so the CPA isn't dividing
+          by zero. The harness's volume-reliability test will catch
+          single-conversion cases as inconclusive.
+        source: implementation default
+    overrides: []
+
+  budget_capped:
+    description: >
+      Campaign averaged >30% IS lost to budget across 7+ days of the last
+      14. Weaker than budget_limited_is — it's an observation, not a
+      recommendation. Harness disconfirms when actual budget utilization
+      is low (cap is nominal, not binding) or rank-loss dominates.
+    defaults:
+      window_days: 14
+      avg_budget_lost_is_min: 0.30
+      min_days_capped: 7
+    sources:
+      - threshold: avg_budget_lost_is_min
+        value: 0.30
+        rationale: >
+          Slightly softer than budget_limited_is (0.35) because this signal
+          fires when a campaign is consistently *capped*, not necessarily
+          starved. 30% is the inflection per pattern-detection-logic.md.
+        source: research/patterns/pattern-detection-logic.md (Budget Constraints)
+      - threshold: min_days_capped
+        value: 7
+        rationale: >
+          Half the 14-day window. Below this, the "consistently" framing
+          isn't earned.
+        source: implementation default
+    overrides: []
+
+  auto_applied_changes:
+    description: >
+      Account has auto-applied changes from Google's recommendation system
+      in the last 30 days. Risk signal — Google's auto-applied changes can
+      silently degrade performance. Harness disconfirms when outcomes
+      didn't actually move or the changes are too recent to measure.
+    defaults:
+      window_days: 30
+      critical_count: 5     # ≥5 changes = critical, else warning
+    sources:
+      - threshold: critical_count
+        value: 5
+        rationale: >
+          One or two auto-changes are normal; 5+ in a month indicates
+          Google is making sustained structural modifications worth a
+          human review (Vallaeys' "Google's defaults quietly drain budget"
+          observation).
+        source: research/experts/tier1-expert-frameworks.md (Vallaeys)
+    overrides: []
+
+  duplicate_primary_conversions:
+    description: >
+      Account has 3+ ENABLED primary conversion actions, which inflates
+      reported conversions. Harness disconfirms when the multiple actions
+      are in distinct categories (LEAD + PURCHASE + APPOINTMENT) — legit
+      multi-goal tracking rather than duplication.
+    defaults:
+      primary_count_min: 3
+    sources:
+      - threshold: primary_count_min
+        value: 3
+        rationale: >
+          One primary is ideal; two is acceptable for a hybrid model
+          (ecommerce + lead). Three or more strongly suggests duplication
+          or misconfiguration per Rhodes/Vallaeys conversion-audit guidance.
+        source: research/experts/tier1-expert-frameworks.md (Rhodes; Vallaeys)
+    overrides: []
+
+  over_segmentation:
+    description: >
+      Account has many small campaigns starving for conversion data —
+      ≥50% of enabled campaigns get fewer than 30 conv/month despite the
+      account having ≥100 total conversions. Harness disconfirms when the
+      "starving" campaigns are intentional splits (geo, brand vs non-brand,
+      campaign-type).
+    defaults:
+      window_days: 30
+      per_campaign_conv_min: 30
+      account_total_conv_min: 100
+      account_campaigns_min: 5
+      starving_share_min: 0.5
+    sources:
+      - threshold: per_campaign_conv_min
+        value: 30
+        rationale: >
+          The cross-industry Smart-Bidding minimum: Google + Roadway AI
+          + Digital4Startups all converge on 30 conversions/month per
+          campaign for reliable optimization.
+        source: research/benchmarks/industry-benchmarks.md (Smart Bidding thresholds)
+      - threshold: starving_share_min
+        value: 0.5
+        rationale: >
+          A few small campaigns is normal (tests, geo splits). When more
+          than half the campaigns starve, consolidation is the structural
+          fix per smec/Lolk.
+        source: research/experts/tier1-expert-frameworks.md (Lolk consolidation)
+    overrides: []
+
+  insufficient_conversions_for_strategy:
+    description: >
+      Campaign uses TARGET_CPA or TARGET_ROAS bidding with < 15 conv/month.
+      Smart Bidding can't optimize without enough conversion data. Harness
+      disconfirms when campaign is paused, the strategy was just changed
+      (still ramping), or value/AOV is high enough for tROAS to optimize
+      on revenue despite low count.
+    defaults:
+      window_days: 30
+      monthly_conv_min: 15
+      strategies:
+        - TARGET_CPA
+        - TARGET_ROAS
+    sources:
+      - threshold: monthly_conv_min
+        value: 15
+        rationale: >
+          Jyll's transition threshold: <15 conv/month = Maximize
+          Conversions (no target); 15-30 = begin tCPA testing; 30+ =
+          tCPA reliable. Below 15 the target strategy thrashes.
+        source: research/benchmarks/industry-benchmarks.md (Jyll Saskin Gales)
+    overrides: []
+
+  pmax_low_conv_volume:
+    description: >
+      PMax campaign has < 30 conv/month with > $1k spend. PMax Smart
+      Bidding needs 30+ conversions to optimize meaningfully. Harness
+      disconfirms when the campaign is too new (still ramping), spend
+      share is tiny (a test, not the structure), or high AOV makes value
+      a usable signal.
+    defaults:
+      window_days: 30
+      monthly_conv_min: 30
+      monthly_cost_micros_min: 1000000000  # $1000
+    sources:
+      - threshold: monthly_conv_min
+        value: 30
+        rationale: >
+          Digital4Startups + Google PMax guidance: 50-100/month ideal,
+          30 minimum. Below this PMax's signal-to-noise is too low.
+        source: research/benchmarks/industry-benchmarks.md (PMax conversion thresholds)
+      - threshold: monthly_cost_micros_min
+        value: 1000000000
+        rationale: >
+          $1k spend floor — avoids firing on small-spend test PMax
+          campaigns where low convs are expected, not pathological.
+        source: implementation default
+    overrides: []
