@@ -33,7 +33,12 @@ def _load_raw() -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _override_matches(when: dict, business_type: str | None, spend_tier: str | None) -> bool:
+def _override_matches(
+    when: dict,
+    business_type: str | None,
+    spend_tier: str | None,
+    vertical: str | None,
+) -> bool:
     """An override applies only if every condition in `when` matches the account."""
     if not when:
         return False
@@ -41,13 +46,22 @@ def _override_matches(when: dict, business_type: str | None, spend_tier: str | N
         return False
     if "spend_tier" in when and when["spend_tier"] != spend_tier:
         return False
+    if "vertical" in when and when["vertical"] != vertical:
+        return False
     return True
+
+
+# Keys reserved at the top level of an override entry (not threshold values).
+_OVERRIDE_META = frozenset({
+    "when", "rationale", "source", "skip", "confidence", "note", "revisit"
+})
 
 
 def effective_thresholds(
     detector_key: str,
     business_type: str | None = None,
     spend_tier: str | None = None,
+    vertical: str | None = None,
 ) -> dict[str, Any] | None:
     """Return the effective threshold dict for this detector + account context.
 
@@ -61,15 +75,39 @@ def effective_thresholds(
 
     result = dict(detector.get("defaults", {}))
     for override in detector.get("overrides", []):
-        if not _override_matches(override.get("when", {}), business_type, spend_tier):
+        if not _override_matches(
+            override.get("when", {}), business_type, spend_tier, vertical
+        ):
             continue
         if override.get("skip") is True:
             return None
         for k, v in override.items():
-            if k in ("when", "rationale", "source", "skip"):
+            if k in _OVERRIDE_META:
                 continue
             result[k] = v
     return result
+
+
+def accounts_to_skip_for(db, detector_key: str) -> set[str]:
+    """Return account_ids the detector should NOT fire on (per `skip: true` overrides).
+
+    Used by detectors that run one SQL pass across all accounts: pull
+    signals, then drop any whose account matched a skip override.
+    """
+    rows = db.fetchall(
+        "SELECT account_id, business_type, spend_tier, vertical FROM accounts"
+    )
+    skip: set[str] = set()
+    for acct_id, biz, tier, vert in rows:
+        try:
+            t = effective_thresholds(
+                detector_key, business_type=biz, spend_tier=tier, vertical=vert,
+            )
+        except KeyError:
+            continue
+        if t is None:
+            skip.add(acct_id)
+    return skip
 
 
 def detector_description(detector_key: str) -> str:

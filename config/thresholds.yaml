@@ -146,7 +146,23 @@ detectors:
           $500 floor over 7 days ensures the IS metric is computed on
           enough impressions to be reliable.
         source: implementation default (legacy detector)
-    overrides: []
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Google Ad Grants operate under a $10K/month cap, $2.00 max CPC,
+          and a 5% minimum CTR — all REGULATORY constraints. A grant
+          account losing IS to budget is hitting Google's cap, not its
+          own. The "more budget would mean more conversions" claim is
+          meaningless when budget is externally fixed.
+        source: research/benchmarks/industry-benchmarks.md (Google Ad Grants constraints)
+        revisit: |
+          When we add a `grant_budget_capped_at_ceiling` signal type that
+          fires only when the grant's $10K cap is the active constraint,
+          remove this skip and route grant accounts through the new
+          detector instead.
 
   cvr_drop:
     description: >
@@ -231,7 +247,16 @@ detectors:
           Half the 14-day window. Below this, the "consistently" framing
           isn't earned.
         source: implementation default
-    overrides: []
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Same reason as budget_limited_is: grant accounts are capped by
+          policy, not by the advertiser's budget choices.
+        source: research/benchmarks/industry-benchmarks.md (Google Ad Grants)
+        revisit: when grant-specific detector exists
 
   auto_applied_changes:
     description: >
@@ -322,7 +347,28 @@ detectors:
           Conversions (no target); 15-30 = begin tCPA testing; 30+ =
           tCPA reliable. Below 15 the target strategy thrashes.
         source: research/benchmarks/industry-benchmarks.md (Jyll Saskin Gales)
-    overrides: []
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Grant accounts have different optimization rules and conversion
+          volume expectations than commercial advertisers. The Jyll
+          threshold doesn't apply.
+        source: research/benchmarks/industry-benchmarks.md (Google Ad Grants)
+        revisit: when we add grant-specific bidding pattern detection
+      - when:
+          business_type: app
+        skip: true
+        confidence: prior
+        rationale: |
+          APP campaigns use App-specific bidding strategies (TARGET_CPI,
+          TARGET_RETURN_ON_AD_SPEND_APP) — not TARGET_CPA/TARGET_ROAS.
+          The detector's SQL filter already excludes them via the
+          strategies list, but this override is defense-in-depth.
+        source: Google Ads bidding-strategy taxonomy
+        revisit: when we add an app-specific volume detector
 
   pmax_low_conv_volume:
     description: >
@@ -348,4 +394,14 @@ detectors:
           $1k spend floor — avoids firing on small-spend test PMax
           campaigns where low convs are expected, not pathological.
         source: implementation default
-    overrides: []
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Grant accounts typically can't run PMax (policy + structural
+          fit). If a grant account somehow has PMax in our data it's a
+          configuration anomaly, not a Smart-Bidding-volume problem.
+        source: Google Ad Grants policy + research/benchmarks/industry-benchmarks.md
+        revisit: never (this should remain a skip)

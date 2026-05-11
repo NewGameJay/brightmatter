@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
-from brightmatter.thresholds import effective_thresholds
+from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
 
 
 def _now():
@@ -50,7 +50,28 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_missing_extensions(db))
     signals.extend(detect_cross_account_outlier(db))
     signals.extend(detect_pmax_low_conversion_volume(db))
-    return signals
+
+    # Apply YAML-configured skip overrides. Each signal's `signal_type` is the
+    # detector key in thresholds.yaml. If a detector has an override matching
+    # the signal's account that sets `skip: true`, drop that signal here.
+    # Detectors without a YAML entry (e.g. legacy ones not yet externalized)
+    # are passed through unchanged.
+    return _apply_skip_overrides(db, signals)
+
+
+def _apply_skip_overrides(db: Database, signals: list[Signal]) -> list[Signal]:
+    skip_cache: dict[str, set[str]] = {}
+    out: list[Signal] = []
+    for s in signals:
+        key = s.signal_type
+        if key not in skip_cache:
+            try:
+                skip_cache[key] = accounts_to_skip_for(db, key)
+            except KeyError:
+                skip_cache[key] = set()  # detector has no YAML entry yet
+        if s.account_id not in skip_cache[key]:
+            out.append(s)
+    return out
 
 
 # ── Detector: Tracking Breaks ──
@@ -308,7 +329,7 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
             FROM by_type
             GROUP BY account_id
         )
-        SELECT ar.account_id, a.business_type, a.spend_tier, a.account_name,
+        SELECT ar.account_id, a.business_type, a.spend_tier, a.vertical, a.account_name,
                ar.brand_value, ar.brand_cost, ar.brand_convs,
                ar.nonbrand_value, ar.nonbrand_cost, ar.nonbrand_convs,
                ar.total_value, ar.total_cost
@@ -318,14 +339,14 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
     """)
 
     signals: list[Signal] = []
-    for (acct_id, biz_type, spend_tier, acct_name,
+    for (acct_id, biz_type, spend_tier, vertical, acct_name,
          b_val, b_cost, b_convs,
          nb_val, nb_cost, nb_convs,
          tot_val, tot_cost) in candidates:
 
         th = effective_thresholds(
             "brand_nonbrand_contamination",
-            business_type=biz_type, spend_tier=spend_tier,
+            business_type=biz_type, spend_tier=spend_tier, vertical=vertical,
         )
         if th is None:
             continue  # override said skip (e.g., lead_gen)
