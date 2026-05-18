@@ -197,15 +197,20 @@ detectors:
   cpa_spike:
     description: >
       Recent (7-day) CPA exceeds 3x the 30-day baseline with sufficient
-      conversions to back the claim. Harness disconfirms when a single
-      bad day spikes the average, bidding strategy was changed mid-period,
+      conversions AND multi-day activity to back the claim. The recent
+      window must have ≥5 conversions, activity on ≥3 distinct days, and
+      no single day accounting for >50% of weekly spend — otherwise the
+      "spike" is a sampling artifact, not a real degradation. Harness
+      additionally disconfirms when bidding strategy was changed mid-period
       or AOV rose proportionally (higher CPA buys higher-value conversions).
     defaults:
       recent_window_days: 7
       baseline_window_days: 30   # 8-30 days back from today
       recent_cpa_multiplier: 3.0
-      recent_conv_min: 1
+      recent_conv_min: 5
       baseline_conv_min: 3
+      recent_active_days_min: 3
+      max_single_day_share_max: 0.50
     sources:
       - threshold: recent_cpa_multiplier
         value: 3.0
@@ -215,12 +220,50 @@ detectors:
           signal in low-volume campaigns.
         source: research/patterns/pattern-detection-logic.md (CPA Spikes)
       - threshold: recent_conv_min
-        value: 1
+        value: 5
         rationale: >
-          We require at least 1 recent conversion so the CPA isn't dividing
-          by zero. The harness's volume-reliability test will catch
-          single-conversion cases as inconclusive.
-        source: implementation default
+          Raised from 1 → 5 on 2026-05-16 after harness disconfirmation
+          (0/6 on T1 Recent-week volume reliability). The harness's T1
+          fires "noise-dominated" below 5 conversions; the detector must
+          enforce the same floor before firing. With <5 recent conversions
+          a "CPA spike" is statistically indistinguishable from sampling
+          noise around the baseline.
+        source: harness audit 2026-05-16 (cpa_spike T1 disconfirmation rate)
+        confidence: prior
+        revisit: >
+          If a 30-day run produces 0 cpa_spike signals across the active
+          cohort, consider lowering to 3 — but only after first relaxing
+          recent_active_days_min, since multi-day activity is a stronger
+          guarantee of reliability than raw conversion count.
+      - threshold: recent_active_days_min
+        value: 3
+        rationale: >
+          Added 2026-05-16 in response to harness audit — all 6 signals
+          in the prior run had spend on only one day of the 7-day window.
+          A "CPA spike" computed against one day of activity isn't a trend,
+          it's a single observation. Requiring 3 of 7 days with spend
+          ensures the recent-window CPA averages over at least three
+          observations.
+        source: harness audit 2026-05-16 (cpa_spike T2 disconfirmation rate)
+        confidence: prior
+        revisit: >
+          If the detector under-fires, try 2 before lowering further.
+          Lowering below 2 effectively reverts to the pre-fix behavior.
+      - threshold: max_single_day_share_max
+        value: 0.50
+        rationale: >
+          Added 2026-05-16. Mirrors the harness's T2 single-day-outlier
+          test promoted from disconfirmation to pre-filter. Any recent
+          window where one day accounts for >50% of spend has too much
+          single-day leverage on the CPA average to call the change a
+          trend. T2 used the same 0.50 cutoff and disconfirmed 6/6 prior
+          signals — by gating at the detector, we never produce signals
+          that T2 would immediately disconfirm.
+        source: harness audit 2026-05-16 (cpa_spike T2 disconfirmation rate)
+        confidence: prior
+        revisit: >
+          If the detector under-fires, try 0.60 before relaxing further.
+          0.50 corresponds to "one day is the median of the rest combined."
     overrides: []
 
   budget_capped:

@@ -159,11 +159,15 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
         WITH recent AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as recent_cpa,
-                   sum(conversions) as recent_conv
+                   sum(conversions) as recent_conv,
+                   count(DISTINCT CASE WHEN cost_micros > 0 THEN date END) as recent_active_days,
+                   max(cost_micros) / NULLIF(sum(cost_micros), 0) as recent_max_day_share
             FROM daily_metrics
             WHERE date >= current_date - {int(th['recent_window_days'])}
             GROUP BY account_id, campaign_id, campaign_name
-            HAVING sum(conversions) > {float(th['recent_conv_min'])}
+            HAVING sum(conversions) >= {float(th['recent_conv_min'])}
+               AND count(DISTINCT CASE WHEN cost_micros > 0 THEN date END) >= {int(th['recent_active_days_min'])}
+               AND max(cost_micros) / NULLIF(sum(cost_micros), 0) <= {float(th['max_single_day_share_max'])}
         ),
         baseline AS (
             SELECT account_id, campaign_id,
