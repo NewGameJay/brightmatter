@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from brightmatter.analysis.change_detectors import run_all_change_detectors
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
 from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
@@ -50,6 +51,11 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_missing_extensions(db))
     signals.extend(detect_cross_account_outlier(db))
     signals.extend(detect_pmax_low_conversion_volume(db))
+
+    # Phase 2 change-detectors: rolling-period comparisons that pair with
+    # the Phase 1 state-detectors above. Both kinds of signals can fire
+    # independently — see brightmatter/analysis/change_detectors.py.
+    signals.extend(run_all_change_detectors(db))
 
     # Apply YAML-configured skip overrides. Each signal's `signal_type` is the
     # detector key in thresholds.yaml. If a detector has an override matching

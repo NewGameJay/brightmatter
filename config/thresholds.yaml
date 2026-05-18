@@ -194,6 +194,142 @@ detectors:
         source: research/benchmarks/industry-benchmarks.md (Roadway AI thresholds)
     overrides: []
 
+  cvr_change:
+    description: >
+      Bidirectional rolling-period delta companion to cvr_drop. Same 7d-vs-7d
+      windows, but fires on movement in either direction at a 15% relative
+      delta. Lower CVR floor than parent (0.5% vs 1%) so we catch movement
+      in mid-funnel campaigns the parent suppresses. Independent from
+      cvr_drop: a sharp drop fires both signals (state + change); a milder
+      drop or an improvement fires only this one.
+    defaults:
+      window_days: 7
+      min_pct_delta: 0.15
+      min_current_clicks: 50
+      min_prior_clicks: 50
+      min_prior_conv: 5
+      min_prior_cvr: 0.005
+    sources:
+      - threshold: window_days
+        value: 7
+        rationale: >
+          Matches the parent cvr_drop window for apples-to-apples comparison.
+          Changing this also requires changing cvr_drop.current_window_days
+          and cvr_drop.prior_window_days.
+        source: implementation default (mirrors parent detector)
+      - threshold: min_pct_delta
+        value: 0.15
+        rationale: >
+          Half the parent's 30% threshold — surfaces earlier movement
+          before it crosses the cvr_drop "investigate" line. 15% is roughly
+          2x the day-to-day Poisson noise on CVR at the volume floors below,
+          so single-week 15%+ movement is unlikely to be pure variance.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If too noisy, raise to 0.20. If real early shifts are missed,
+          lower to 0.10 — but verify by spot-checking signals at that level
+          before relaxing further.
+      - threshold: min_prior_clicks
+        value: 50
+        rationale: >
+          Half the parent's 100-click floor — we want broader coverage for
+          earlier-warning movement, accepting slightly noisier signals.
+          Below 50 clicks per week, CVR rates are statistically thin.
+        source: implementation default (relaxed from parent cvr_drop.prior_clicks_min)
+        confidence: prior
+        revisit: if change-signals fire too often on thin-volume campaigns
+      - threshold: min_current_clicks
+        value: 50
+        rationale: >
+          Mirror of min_prior_clicks for the current window. Both windows
+          need volume for a CVR comparison to be meaningful.
+        source: implementation default (relaxed from parent cvr_drop.current_clicks_min)
+      - threshold: min_prior_conv
+        value: 5
+        rationale: >
+          Half the parent's 10-conv floor. Below 5 prior-week conversions,
+          the prior CVR is too noisy as a baseline for the delta math.
+        source: implementation default (relaxed from parent cvr_drop.prior_conv_min)
+        confidence: prior
+        revisit: if low-conv accounts produce a wave of unreliable signals
+      - threshold: min_prior_cvr
+        value: 0.005
+        rationale: >
+          Half the parent's 1% floor. Allows mid-funnel/awareness campaigns
+          (whose CVRs run lower) to participate. Below 0.5% CVR, weekly
+          movement is mostly variance and not worth surfacing as a change.
+        source: implementation default (relaxed from parent cvr_drop.prior_cvr_min)
+    overrides: []
+
+  cpa_change:
+    description: >
+      Bidirectional rolling-period delta companion to cpa_spike. Uses
+      EQUAL 7d-vs-7d windows (vs cpa_spike's unequal 7d/8-30d comparison)
+      at a 25% bidirectional delta. The "slow drift" view to pair with
+      cpa_spike's "sharp departure from normal baseline" view. Inherits
+      the same noise pre-filters that protect cpa_spike (recent-conv floor,
+      multi-day activity, no single-day-dominated windows) on BOTH sides
+      of the comparison.
+    defaults:
+      window_days: 7
+      min_pct_delta: 0.25
+      min_conv_per_window: 5
+      min_active_days: 3
+      max_single_day_share: 0.50
+    sources:
+      - threshold: window_days
+        value: 7
+        rationale: >
+          Mirror of cpa_spike.recent_window_days. Using equal 7d-vs-7d
+          (instead of cpa_spike's 7d-vs-baseline) is what makes this a
+          distinct signal — it surfaces gradual drift rather than sharp
+          departures from a longer baseline.
+        source: implementation default
+      - threshold: min_pct_delta
+        value: 0.25
+        rationale: >
+          25% week-over-week is the inflection for CPA where movement
+          stops being auction-variance noise. Note: cpa_spike's 3x (200%)
+          threshold catches sharp spikes; this catches gradual drift well
+          below that line in both directions.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If too noisy, tighten to 0.35. If real early drift is missed,
+          loosen to 0.20.
+      - threshold: min_conv_per_window
+        value: 5
+        rationale: >
+          Same floor as the harness's cpa_spike T1 (and the tightened
+          recent_conv_min on cpa_spike). Below 5 conversions per window
+          the CPA is dominated by sampling noise. Required on BOTH windows
+          since the delta is computed from both CPA estimates.
+        source: implementation default (mirrors cpa_spike.recent_conv_min)
+        confidence: prior
+      - threshold: min_active_days
+        value: 3
+        rationale: >
+          Same multi-day-activity guard as cpa_spike.recent_active_days_min.
+          A CPA computed from one day's data isn't a trend. Required on
+          BOTH windows.
+        source: implementation default (mirrors cpa_spike.recent_active_days_min)
+        confidence: prior
+      - threshold: max_single_day_share
+        value: 0.50
+        rationale: >
+          Mirrors cpa_spike.max_single_day_share_max. Any window where
+          one day accounts for >50% of spend has too much leverage from
+          a single observation. Currently enforced on the CURRENT window
+          only (mirroring the parent); applying it to the prior window
+          too is plausible but would shrink the cohort further.
+        source: implementation default (mirrors cpa_spike.max_single_day_share_max)
+        confidence: prior
+        revisit: >
+          If improving-direction signals turn out to be dominated by a
+          single big prior-window day, extend this guard to the prior side.
+    overrides: []
+
   cpa_spike:
     description: >
       Recent (7-day) CPA exceeds 3x the 30-day baseline with sufficient
@@ -300,6 +436,115 @@ detectors:
           policy, not by the advertiser's budget choices.
         source: research/benchmarks/industry-benchmarks.md (Google Ad Grants)
         revisit: when grant-specific detector exists
+
+  budget_limited_is_change:
+    description: >
+      Rolling-period delta companion to budget_limited_is. Compares the most
+      recent 7d avg(search_budget_lost_is) against the prior 7d avg. Fires
+      when the two periods differ by ≥10 percentage points — direction
+      (worsening vs. improving) carried in the signal data. Independent
+      from budget_limited_is: change fires on movement regardless of
+      absolute level; state fires on persistent absolute level regardless
+      of change.
+    defaults:
+      window_days: 7
+      min_delta_pp: 0.10
+      min_days_with_data: 5
+      min_cost_micros: 250000000  # $250 over the 7-day window
+    sources:
+      - threshold: window_days
+        value: 7
+        rationale: >
+          Matches the parent budget_limited_is window for apples-to-apples
+          comparison. Changing this also requires changing the parent.
+        source: implementation default (mirrors parent detector)
+      - threshold: min_delta_pp
+        value: 0.10
+        rationale: >
+          10 percentage points is the inflection where week-over-week
+          shifts stop being noise. Auction variance alone produces ±5pp
+          routinely; ±10pp signals a real shift. Matches budget_capped_change.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If too noisy, tighten to 0.15. If real early-warning shifts are
+          missed, loosen to 0.07 — but only after verifying we're not
+          smoothing over normal auction variance.
+      - threshold: min_days_with_data
+        value: 5
+        rationale: >
+          ≥5 of the 7 days need valid budget_lost_is for the average to be
+          meaningful. Below this, the delta is computed against too little
+          data to be trusted.
+        source: implementation default
+        confidence: prior
+        revisit: if we observe change-signals firing on sparse data
+      - threshold: min_cost_micros
+        value: 250000000
+        rationale: >
+          $250 floor (half the state-detector's $500) — relaxed so we
+          still catch campaigns whose spend was reduced but is still
+          meaningful. Avoids firing on dead campaigns where IS-lost
+          changes are an artifact of having no impressions.
+        source: implementation default (derived from budget_limited_is.total_cost_micros_min)
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Same reason as parent budget_limited_is — grant accounts'
+          budget pressure is regulatory, not a marketer choice.
+        source: research/benchmarks/industry-benchmarks.md (Google Ad Grants)
+        revisit: when grant-specific detector exists
+
+  budget_capped_change:
+    description: >
+      Rolling-period delta companion to budget_capped. Compares the most
+      recent 14d avg(search_budget_lost_is) against the prior 14d avg.
+      Fires when the two periods differ by ≥10 percentage points — direction
+      (worsening vs. improving) is carried in the signal data. Independent
+      from budget_capped: change fires on movement regardless of absolute
+      level; state fires on persistent absolute level regardless of change.
+      Both can fire together (movement at an already-bad level), neither
+      can fire (stable + below threshold), or each alone (state-only =
+      stably bad; change-only = trending bad or improving from bad).
+    defaults:
+      window_days: 14
+      min_delta_pp: 0.10
+      min_days_with_data: 5
+    sources:
+      - threshold: window_days
+        value: 14
+        rationale: >
+          Matches the parent budget_capped window so the comparison is
+          apples-to-apples (current 14d vs prior 14d). Changing this also
+          requires changing budget_capped.window_days.
+        source: implementation default (mirrors parent detector)
+      - threshold: min_delta_pp
+        value: 0.10
+        rationale: >
+          10 percentage points is the inflection where week-over-week
+          shifts in budget-lost-IS stop being noise. Auction variance
+          alone produces ±5pp routinely; ±10pp signals a real shift in
+          either competitive pressure or campaign budget headroom.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If the cohort generates too many noisy change-signals, tighten
+          to 0.15. If real early-warning shifts are missed, loosen to 0.07
+          — but only after verifying we're not just smoothing over normal
+          auction variance.
+      - threshold: min_days_with_data
+        value: 5
+        rationale: >
+          A meaningful avg(budget_lost_is) needs ≥5 days of valid data in
+          each window. Below this, a "delta" is one or two days' values
+          compared to another one or two — too noisy to compare.
+        source: implementation default
+        confidence: prior
+        revisit: if we observe change-signals firing on sparse data
+    overrides: []
 
   auto_applied_changes:
     description: >
@@ -446,5 +691,90 @@ detectors:
           Grant accounts typically can't run PMax (policy + structural
           fit). If a grant account somehow has PMax in our data it's a
           configuration anomaly, not a Smart-Bidding-volume problem.
+        source: Google Ad Grants policy + research/benchmarks/industry-benchmarks.md
+        revisit: never (this should remain a skip)
+
+  pmax_low_conv_volume_change:
+    description: >
+      Rolling-period delta companion to pmax_low_conv_volume. Compares the
+      most recent 14d sum(conversions) for ENABLED PERFORMANCE_MAX campaigns
+      against the prior 14d. Fires on ≥25% relative change AND ≥5 absolute
+      conversions of movement, in either direction. Independent from
+      pmax_low_conv_volume: change fires on movement regardless of absolute
+      level; state fires on persistent absolute level regardless of change.
+      Improving signals are useful too — they preview that a state-firing
+      campaign may exit the firing band on its own as it ramps.
+    defaults:
+      window_days: 14
+      min_pct_delta: 0.25
+      min_abs_delta: 5
+      min_days_with_data: 7
+      min_cost_micros: 500000000  # $500 over the 14-day window
+    sources:
+      - threshold: window_days
+        value: 14
+        rationale: >
+          Half the parent's 30d window. PMax ramps and Smart-Bidding
+          learning phases happen on a multi-week cadence, so 14d-vs-14d
+          balances responsiveness against learning-phase noise. Going
+          shorter (e.g. 7d) starts catching weekly seasonality as "change."
+        source: implementation default (derived from parent pmax_low_conv_volume.window_days)
+        confidence: prior
+        revisit: >
+          If signals lag real PMax volume shifts, try 10d. If they noise
+          on learning-phase reshuffling, try 21d.
+      - threshold: min_pct_delta
+        value: 0.25
+        rationale: >
+          PMax conversion volume routinely moves ±10-15% on auction and
+          inventory variance alone. 25% is the inflection where movement
+          stops being normal week-to-week noise. Looser than the 10pp used
+          for IS-lost change-detectors because conversion *counts* are
+          inherently noisier than rate metrics.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If too noisy, tighten to 0.35. If real shifts are missed (verify
+          via spot-check, not gut), loosen to 0.20.
+      - threshold: min_abs_delta
+        value: 5
+        rationale: >
+          A 25% relative change on 8 conversions is just 2 conversions —
+          well inside Poisson noise. The 5-conv absolute floor ensures the
+          movement is large enough to be statistically interpretable.
+          Matches the parent's 30-conv "minimum to optimize" / 6 = ~one
+          week's worth of meaningful PMax signal.
+        source: implementation default
+        confidence: prior
+        revisit: >
+          If a low-volume cohort needs to surface, lower to 3. Below 3 the
+          signal becomes Poisson noise.
+      - threshold: min_days_with_data
+        value: 7
+        rationale: >
+          7 of 14 days with data in each window. PMax campaigns can have
+          zero-impression days legitimately (inventory exhaustion, daypart
+          rules), so we don't require full coverage — but we need a
+          majority of days for the sum to be a fair comparison.
+        source: implementation default
+        confidence: prior
+        revisit: if change-signals fire on sparse PMax data
+      - threshold: min_cost_micros
+        value: 500000000
+        rationale: >
+          $500 floor over 14 days — pro-rated from the parent's $1k/30d.
+          Suppresses firing on dead or test campaigns where conversion
+          deltas are an artifact of near-zero impressions rather than a
+          real volume shift.
+        source: implementation default (derived from parent pmax_low_conv_volume.monthly_cost_micros_min)
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Same reason as parent pmax_low_conv_volume — grant accounts
+          can't run PMax under Google Ad Grants policy; any PMax data is
+          a config anomaly, not a real volume signal.
         source: Google Ad Grants policy + research/benchmarks/industry-benchmarks.md
         revisit: never (this should remain a skip)
