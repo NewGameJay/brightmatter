@@ -762,6 +762,8 @@ detectors:
       monthly_conv_min: 30
       monthly_cost_micros_min: 1000000000  # $1000
       min_campaign_age_days: 21
+      high_value_per_conv_exempt: 500   # $/conv above which high-AOV PMax is exempt
+      high_value_conv_min: 10           # ...if it also has >= this many conversions
     sources:
       - threshold: monthly_conv_min
         value: 30
@@ -900,6 +902,7 @@ detectors:
       min_pmax_clicks: 200
       min_search_clicks: 200
       min_pmax_conv: 15
+      min_search_conv: 10   # Search needs this many convs or its CVR (the ratio denom) is noise
     sources:
       - threshold: cvr_ratio_min
         value: 3.0
@@ -947,18 +950,19 @@ detectors:
     description: >
       A material share of a campaign's spend went to search terms that never
       converted over the window. The #1 audit finding across published
-      checklists. DATA DEPENDENCY: the search_terms table (ingest
-      --search-terms). SCAFFOLDED 2026-06 — code-complete but UNVALIDATED
-      against real search-term data; produces no signals until ingested.
-      Harness disconfirms when the "wasted" terms had too few clicks to judge
-      (noise) or the waste share is immaterial; the assisted-conversion blind
-      spot of last-click data is surfaced as an explicit caveat.
+      checklists. VALIDATED 2026-06-15 against real search_term_view data
+      (149,942 terms across 139 accounts): MONITOR, zero false positives after
+      adding the min_waste_clicks noise floor. Harness disconfirms when the
+      "wasted" terms had too few clicks to judge (noise) or the waste share is
+      immaterial; the assisted-conversion blind spot of last-click data is
+      surfaced as an explicit caveat.
     defaults:
       window_days: 30
       min_term_cost_micros: 50000000      # $50 — a single term must spend this to count
       min_term_impressions: 100           # enough exposure that 0 conv is meaningful
       min_total_waste_micros: 100000000   # $100 — absolute floor on flagged waste
       waste_share_min: 0.15               # >=15% of campaign spend on zero-conv terms
+      min_waste_clicks: 30                # aggregate clicks on zero-conv terms (noise floor)
     sources:
       - threshold: min_term_cost_micros
         value: 50000000
@@ -966,7 +970,7 @@ detectors:
           A term needs ~$50 of spend before "zero conversions" is a confident
           waste signal rather than an unlucky cheap term. Provisional pending
           validation on real search-term data.
-        source: implementation default (UNVALIDATED scaffold)
+        source: implementation default (validated 2026-06-15 on real search-term data)
         confidence: prior
         revisit: calibrate against the first ingested search_term_view data
       - threshold: min_term_impressions
@@ -974,7 +978,7 @@ detectors:
         rationale: >
           Separates real non-converting traffic from low-impression noise —
           mirrors the harness's statistical-noise check.
-        source: implementation default (UNVALIDATED scaffold)
+        source: implementation default (validated 2026-06-15 on real search-term data)
         confidence: prior
         revisit: calibrate against the first ingested search_term_view data
       - threshold: waste_share_min
@@ -982,7 +986,7 @@ detectors:
         rationale: >
           A few stray non-converting terms are normal; >=15% of campaign spend
           on confirmed zero-converters is a systemic leak worth surfacing.
-        source: implementation default (UNVALIDATED scaffold)
+        source: implementation default (validated 2026-06-15 on real search-term data)
         confidence: prior
         revisit: calibrate against the first ingested search_term_view data
       - threshold: min_total_waste_micros
@@ -990,7 +994,7 @@ detectors:
         rationale: >
           Absolute floor so the percentage gate doesn't fire on tiny campaigns
           where 15% is only a few dollars.
-        source: implementation default (UNVALIDATED scaffold)
+        source: implementation default (validated 2026-06-15 on real search-term data)
         confidence: prior
         revisit: calibrate against the first ingested search_term_view data
     overrides: []

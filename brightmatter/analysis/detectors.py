@@ -1154,6 +1154,11 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
             GROUP BY account_id, campaign_id, campaign_name
             HAVING sum(conversions) < {float(minimum)}
                AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
+               -- Exempt high-AOV PMax: with enough conversion VALUE, Smart
+               -- Bidding can optimize on revenue despite a low count (harness T2).
+               AND (sum(conversion_value) / NULLIF(sum(conversions), 0)
+                        < {float(th['high_value_per_conv_exempt'])}
+                    OR sum(conversions) < {float(th['high_value_conv_min'])})
         ),
         age AS (
             SELECT account_id, campaign_id,
@@ -1221,6 +1226,9 @@ def detect_pmax_conversion_inflation(db: Database) -> list[Signal]:
           AND p.clk >= {int(th['min_pmax_clicks'])}
           AND s.clk >= {int(th['min_search_clicks'])}
           AND p.conv >= {float(th['min_pmax_conv'])}
+          -- Search also needs enough conversions or its CVR (the ratio's
+          -- denominator) is small-sample noise and the gap is spurious (T1/T4).
+          AND s.conv >= {float(th['min_search_conv'])}
           AND (p.conv / NULLIF(p.clk, 0))
               >= {float(th['cvr_ratio_min'])} * (s.conv / NULLIF(s.clk, 0))
           AND (s.conv / NULLIF(s.clk, 0)) > 0
@@ -1287,6 +1295,9 @@ def detect_search_terms_waste(db: Database) -> list[Signal]:
             FROM camp
             WHERE waste_cost >= {min_total_waste}
               AND waste_cost >= {waste_share_min} * NULLIF(total_cost, 0)
+              -- Enough clicks on the zero-conv terms that "never converts" is a
+              -- real signal, not small-sample noise (harness T1).
+              AND waste_clicks >= {int(th['min_waste_clicks'])}
             ORDER BY waste_cost DESC
         """)
     except Exception:
