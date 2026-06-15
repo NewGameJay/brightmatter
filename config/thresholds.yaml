@@ -669,6 +669,7 @@ detectors:
       window_days: 30
       monthly_conv_min: 30
       monthly_cost_micros_min: 1000000000  # $1000
+      min_campaign_age_days: 21
     sources:
       - threshold: monthly_conv_min
         value: 30
@@ -682,6 +683,18 @@ detectors:
           $1k spend floor — avoids firing on small-spend test PMax
           campaigns where low convs are expected, not pathological.
         source: implementation default
+      - threshold: min_campaign_age_days
+        value: 21
+        rationale: >
+          Don't flag PMax campaigns still in their ramp. A campaign visible
+          for only days hasn't had time to accumulate 30 conv/month, so
+          "insufficient volume to optimize" is not yet a real claim — Google
+          guides 6+ weeks before judging PMax. Set to 21 to match the
+          disconfirmation harness's T4 ramp threshold so detector and harness
+          agree (every signal the harness would kill on age now never fires).
+          Validated: this gate removed all 14 false positives (REVISE→MONITOR)
+          in the 2026-05-09 snapshot, all of which were 4-20d-old campaigns.
+        source: harness T4 (validation/pmax_low_volume.py) + Google PMax ramp guidance
     overrides:
       - when:
           business_type: nonprofit

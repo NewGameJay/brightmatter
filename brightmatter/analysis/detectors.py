@@ -1054,17 +1054,34 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
     if anchor is None:
         return []
     minimum = th['monthly_conv_min']
+    # Age gate: a PMax campaign still in its ramp hasn't had time to reach
+    # 30 conv/month, so "insufficient volume to optimize" isn't yet a real
+    # claim. Compute age from the campaign's full data history (any status),
+    # matching harness T4, and require it to clear min_campaign_age_days.
     rows = db.fetchall(windowed(f"""
-        SELECT account_id, campaign_id, campaign_name,
-               sum(conversions) as monthly_conv,
-               sum(cost_micros) / 1000000.0 as monthly_cost
-        FROM daily_metrics
-        WHERE date >= current_date - {int(th['window_days'])}
-          AND campaign_type = 'PERFORMANCE_MAX'
-          AND status = 'ENABLED'
-        GROUP BY account_id, campaign_id, campaign_name
-        HAVING sum(conversions) < {float(minimum)}
-           AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
+        WITH agg AS (
+            SELECT account_id, campaign_id, campaign_name,
+                   sum(conversions) as monthly_conv,
+                   sum(cost_micros) / 1000000.0 as monthly_cost
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND campaign_type = 'PERFORMANCE_MAX'
+              AND status = 'ENABLED'
+            GROUP BY account_id, campaign_id, campaign_name
+            HAVING sum(conversions) < {float(minimum)}
+               AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
+        ),
+        age AS (
+            SELECT account_id, campaign_id,
+                   (max(date) - min(date)) + 1 as age_days
+            FROM daily_metrics
+            GROUP BY account_id, campaign_id
+        )
+        SELECT agg.account_id, agg.campaign_id, agg.campaign_name,
+               agg.monthly_conv, agg.monthly_cost
+        FROM agg
+        JOIN age USING (account_id, campaign_id)
+        WHERE age.age_days >= {int(th['min_campaign_age_days'])}
     """, anchor))
     signals = []
     for r in rows:
