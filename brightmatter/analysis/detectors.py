@@ -56,6 +56,7 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_missing_extensions(db))
     signals.extend(detect_cross_account_outlier(db))
     signals.extend(detect_pmax_low_conversion_volume(db))
+    signals.extend(detect_pmax_conversion_inflation(db))
 
     # Phase 2 change-detectors: rolling-period comparisons that pair with
     # the Phase 1 state-detectors above. Both kinds of signals can fire
@@ -1168,6 +1169,72 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
             value=r[3], threshold=float(minimum),
             message=f"PMax '{r[2]}' has only {r[3]:.0f} conv/month on ${r[4]:,.0f} spend — needs {minimum:g}+ for Smart Bidding to optimize",
             data={"campaign_id": r[1], "monthly_conv": r[3], "monthly_cost": r[4]},
+            detected_at=_now(),
+        ))
+    return signals
+
+
+# ── Detector: PMax Conversion Inflation ──
+# Research: PMax inherits all primary conversion actions by default and counts
+# micro-conversions Search doesn't, inflating its apparent CVR/ROAS. Empirically
+# found in LOCKLY (26K PMax vs 290 Search conversions). Compare PMax vs Search
+# CVR within the same account: a large gap is the observable inflation signature.
+
+def detect_pmax_conversion_inflation(db: Database) -> list[Signal]:
+    """Flag accounts where PMax CVR is implausibly higher than Search CVR.
+
+    PMax and Search bid in the same auctions for the same advertiser; PMax can
+    convert somewhat higher (shopping/retargeting mix), but a multiple-x gap
+    usually means PMax is counting conversion actions Search isn't.
+
+    Thresholds: config/thresholds.yaml → pmax_conversion_inflation.
+    """
+    th = effective_thresholds("pmax_conversion_inflation")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
+        WITH agg AS (
+            SELECT account_id, campaign_type,
+                   sum(conversions) as conv, sum(clicks) as clk,
+                   sum(conversion_value) as val
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND campaign_type IN ('PERFORMANCE_MAX', 'SEARCH')
+            GROUP BY account_id, campaign_type
+        )
+        SELECT p.account_id,
+               p.conv as pmax_conv, p.clk as pmax_clk, p.val as pmax_val,
+               s.conv as search_conv, s.clk as search_clk, s.val as search_val,
+               (p.conv / NULLIF(p.clk, 0)) as pmax_cvr,
+               (s.conv / NULLIF(s.clk, 0)) as search_cvr
+        FROM agg p
+        JOIN agg s ON p.account_id = s.account_id
+        WHERE p.campaign_type = 'PERFORMANCE_MAX' AND s.campaign_type = 'SEARCH'
+          AND p.clk >= {int(th['min_pmax_clicks'])}
+          AND s.clk >= {int(th['min_search_clicks'])}
+          AND p.conv >= {float(th['min_pmax_conv'])}
+          AND (p.conv / NULLIF(p.clk, 0))
+              >= {float(th['cvr_ratio_min'])} * (s.conv / NULLIF(s.clk, 0))
+          AND (s.conv / NULLIF(s.clk, 0)) > 0
+    """, anchor))
+    signals = []
+    ratio_min = th['cvr_ratio_min']
+    for r in rows:
+        acct, pconv, pclk, pval, sconv, sclk, sval, pcvr, scvr = r
+        ratio = pcvr / scvr if scvr else 0.0
+        signals.append(Signal(
+            signal_id=_id(), account_id=acct,
+            domain=PatternDomain.PERFORMANCE_MAX,
+            signal_type="pmax_conversion_inflation", severity=Severity.WARNING,
+            value=ratio, threshold=float(ratio_min),
+            message=(f"PMax CVR {pcvr:.1%} is {ratio:.1f}x Search CVR {scvr:.1%} in the same account "
+                     f"({pconv:.0f} PMax vs {sconv:.0f} Search conv) — PMax may be counting "
+                     f"conversion actions Search isn't (micro-conversion inflation)"),
+            data={"pmax_cvr": pcvr, "search_cvr": scvr, "cvr_ratio": ratio,
+                  "pmax_conv": pconv, "search_conv": sconv,
+                  "pmax_value_per_conv": (pval / pconv) if pconv else None,
+                  "search_value_per_conv": (sval / sconv) if sconv else None},
             detected_at=_now(),
         ))
     return signals

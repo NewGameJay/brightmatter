@@ -883,3 +883,62 @@ detectors:
           a config anomaly, not a real volume signal.
         source: Google Ad Grants policy + research/benchmarks/industry-benchmarks.md
         revisit: never (this should remain a skip)
+
+  pmax_conversion_inflation:
+    description: >
+      Within one account, PMax CVR is ≥3x the Search CVR over 30 days (both
+      channels with reliable volume). PMax inherits all primary conversion
+      actions by default and can count micro-conversions Search doesn't, so a
+      large same-account CVR gap is the observable inflation signature
+      (empirically: LOCKLY, 26K PMax vs 290 Search conversions). Harness
+      disconfirms when volume is thin, PMax & Search value-per-conversion are
+      similar (real conversions of equal worth), or the account has no
+      micro-conversion / many-per-click mechanism to drive inflation.
+    defaults:
+      window_days: 30
+      cvr_ratio_min: 3.0
+      min_pmax_clicks: 200
+      min_search_clicks: 200
+      min_pmax_conv: 15
+    sources:
+      - threshold: cvr_ratio_min
+        value: 3.0
+        rationale: >
+          PMax can legitimately convert above Search (shopping/retargeting
+          intent), so ~2x is plausible and not flagged. 3x+ is the inflection
+          where the gap usually reflects different conversion-action counting
+          rather than traffic quality. On the 2026-05-09 snapshot this fires
+          on 3 of 35 dual-channel accounts, incl. one at 73.6% PMax CVR
+          (19.7x) — implausible for real purchases.
+        source: empirical calibration (2026-05-09 snapshot) + PMax conversion-inheritance behavior
+        confidence: prior
+        revisit: >
+          If it fires on accounts where PMax is genuinely shopping-heavy and
+          value-per-conversion matches Search, raise to 4.0. Re-check after
+          ingesting per-campaign conversion-action attribution, which would
+          let the detector test the mechanism directly instead of by symptom.
+      - threshold: min_pmax_clicks
+        value: 200
+        rationale: >
+          Both channels need enough clicks for the CVR ratio to be stable
+          rather than small-sample noise.
+        source: implementation default
+      - threshold: min_search_clicks
+        value: 200
+        rationale: Same reliability floor for the Search baseline.
+        source: implementation default
+      - threshold: min_pmax_conv
+        value: 15
+        rationale: >
+          PMax needs a real conversion count for its CVR to be meaningful;
+          below 15 the ratio is dominated by a handful of conversions.
+        source: implementation default
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Grant accounts can't run PMax under Google Ad Grants policy.
+        source: Google Ad Grants policy
+        revisit: never (this should remain a skip)

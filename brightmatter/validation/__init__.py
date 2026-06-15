@@ -25,6 +25,9 @@ from brightmatter.validation.insufficient_conversions import (
     audit_insufficient_conversions_signals,
 )
 from brightmatter.validation.over_segmentation import audit_over_segmentation_signals
+from brightmatter.validation.pmax_conversion_inflation import (
+    audit_pmax_conversion_inflation_signals,
+)
 from brightmatter.validation.pmax_low_conv_volume_change import (
     audit_pmax_low_conv_volume_change_signals,
 )
@@ -49,6 +52,7 @@ AUDITS = {
     "insufficient_conv":            audit_insufficient_conversions_signals,
     "pmax_low_volume":              audit_pmax_low_volume_signals,
     "pmax_low_conv_volume_change":  audit_pmax_low_conv_volume_change_signals,
+    "pmax_conversion_inflation":    audit_pmax_conversion_inflation_signals,
 }
 
 __all__ = ["AUDITS"]
