@@ -15,6 +15,7 @@ from brightmatter.analysis.change_detectors import (
     run_all_change_detectors,
     windowed,
 )
+from brightmatter.analysis.naming import split_fractions
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
 from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
@@ -604,14 +605,32 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
     if anchor is None:
         return []
     strategies_in = ", ".join(f"'{s}'" for s in th.get("strategies", []))
+    # Gate out campaigns that are paused (the strategy isn't even running) or
+    # too new to have accumulated a month of conversions — both produce low
+    # counts for reasons unrelated to a misconfigured strategy (harness T1/T4).
     rows = db.fetchall(windowed(f"""
-        SELECT account_id, campaign_id, campaign_name, bidding_strategy,
-               sum(conversions) as monthly_conv
-        FROM daily_metrics
-        WHERE date >= current_date - {int(th['window_days'])}
-          AND bidding_strategy IN ({strategies_in})
-        GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
-        HAVING sum(conversions) < {float(th['monthly_conv_min'])}
+        WITH agg AS (
+            SELECT account_id, campaign_id, campaign_name, bidding_strategy,
+                   sum(conversions) as monthly_conv,
+                   count(CASE WHEN status = 'ENABLED' THEN 1 END) as enabled_days,
+                   count(*) as total_days
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND bidding_strategy IN ({strategies_in})
+            GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
+            HAVING sum(conversions) < {float(th['monthly_conv_min'])}
+               AND count(CASE WHEN status = 'ENABLED' THEN 1 END) > count(*) * 0.5
+        ),
+        age AS (
+            SELECT account_id, campaign_id, (max(date) - min(date)) + 1 as age_days
+            FROM daily_metrics
+            GROUP BY account_id, campaign_id
+        )
+        SELECT agg.account_id, agg.campaign_id, agg.campaign_name,
+               agg.bidding_strategy, agg.monthly_conv
+        FROM agg
+        JOIN age USING (account_id, campaign_id)
+        WHERE age.age_days >= {int(th['min_campaign_age_days'])}
     """, anchor))
     signals = []
     minimum = th['monthly_conv_min']
@@ -812,15 +831,35 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
         FROM account_summary
         WHERE starving_campaigns * 1.0 / total_campaigns > {float(th['starving_share_min'])}
     """, anchor))
+    geo_max = float(th['intentional_geo_share_max'])
+    tb_max = float(th['intentional_type_brand_share_max'])
+    per_camp_min = float(th['per_campaign_conv_min'])
     signals = []
     for r in rows:
+        acct = r[0]
+        # Suppress when the starving campaigns are predominantly geo- or
+        # type/brand-named: that's a deliberate split, not accidental
+        # fragmentation (harness T1/T2). Same starving definition as the query.
+        starving_names = [row[0] for row in db.fetchall(windowed(f"""
+            SELECT campaign_name
+            FROM daily_metrics
+            WHERE account_id = ? AND date >= current_date - {int(th['window_days'])}
+              AND status = 'ENABLED'
+            GROUP BY campaign_id, campaign_name
+            HAVING sum(conversions) < {per_camp_min} AND sum(conversions) > 0
+        """, anchor), [acct])]
+        geo_frac, tb_frac = split_fractions(starving_names)
+        if geo_frac >= geo_max or tb_frac >= tb_max:
+            continue
         signals.append(Signal(
-            signal_id=_id(), account_id=r[0],
+            signal_id=_id(), account_id=acct,
             domain=PatternDomain.CAMPAIGN_STRUCTURE,
             signal_type="over_segmentation", severity=Severity.WARNING,
             value=r[5], threshold=0.5,
             message=f"{r[3]}/{r[1]} campaigns have <30 conv/month ({r[5]:.0%} starving) despite {r[2]:.0f} total — consider consolidation",
-            data={"total_campaigns": r[1], "total_conv": r[2], "starving": r[3], "starving_pct": r[5]},
+            data={"total_campaigns": r[1], "total_conv": r[2], "starving": r[3],
+                  "starving_pct": r[5], "starving_geo_frac": round(geo_frac, 2),
+                  "starving_type_brand_frac": round(tb_frac, 2)},
             detected_at=_now(),
         ))
     return signals

@@ -11,20 +11,12 @@ campaigns that haven't ramped yet.
 from __future__ import annotations
 
 import json
-import re
 
+from brightmatter.analysis.naming import BRAND_HINTS as _BRAND_HINTS
+from brightmatter.analysis.naming import GEO_HINTS as _GEO_HINTS
+from brightmatter.analysis.naming import TYPE_HINTS as _TYPE_HINTS
 from brightmatter.storage.database import Database
 from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
-
-
-_GEO_HINTS = re.compile(
-    r"\b(usa|us|uk|ca|eu|au|de|fr|es|it|nl|jp|kr|"
-    r"ny|ca|tx|fl|wa|or|ma|il|nj|geo|state|city|local|region|"
-    r"new[-_ ]york|los[-_ ]angeles|chicago|boston|miami|seattle|austin|dallas|denver)\b",
-    re.IGNORECASE,
-)
-_BRAND_HINTS = re.compile(r"\bbrand|nonbrand|non[-_ ]brand|generic|competitor\b", re.IGNORECASE)
-_TYPE_HINTS = re.compile(r"\bpmax|shopping|search|display|video|youtube|discovery|demand[-_ ]gen\b", re.IGNORECASE)
 
 
 def _starving_campaigns(db: Database, account_id: str) -> list[tuple[str, str, float]]:

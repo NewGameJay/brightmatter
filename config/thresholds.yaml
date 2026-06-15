@@ -221,6 +221,7 @@ detectors:
       min_prior_clicks: 50
       min_prior_conv: 5
       min_prior_cvr: 0.005
+      max_single_day_click_share: 0.5
     sources:
       - threshold: window_days
         value: 7
@@ -229,6 +230,17 @@ detectors:
           Changing this also requires changing cvr_drop.current_window_days
           and cvr_drop.prior_window_days.
         source: implementation default (mirrors parent detector)
+      - threshold: max_single_day_click_share
+        value: 0.5
+        rationale: >
+          Drop the signal when one day holds >50% of a window's clicks: the
+          CVR for that window is then one observation, and a delta against it
+          is noise/mean-reversion, not a real shift. Mirrors harness T4
+          (single-day click dominance) and the cpa_spike single-day-share
+          gate. Validated: removed the lone false positive (TIGHTEN->MONITOR)
+          on the 2026-05-09 snapshot — a campaign whose prior week was a
+          single-day low outlier.
+        source: harness T4 (validation/cvr_drop.py single-day dominance)
       - threshold: min_pct_delta
         value: 0.15
         rationale: >
@@ -645,6 +657,8 @@ detectors:
       account_total_conv_min: 100
       account_campaigns_min: 5
       starving_share_min: 0.5
+      intentional_geo_share_max: 0.5
+      intentional_type_brand_share_max: 0.6
     sources:
       - threshold: per_campaign_conv_min
         value: 30
@@ -660,6 +674,23 @@ detectors:
           than half the campaigns starve, consolidation is the structural
           fix per smec/Lolk.
         source: research/experts/tier1-expert-frameworks.md (Lolk consolidation)
+      - threshold: intentional_geo_share_max
+        value: 0.5
+        rationale: >
+          Suppress the signal when ≥50% of the starving campaigns are
+          geo-named — that's a deliberate geo split, not accidental
+          fragmentation. Mirrors harness T1 (intentional geo segmentation).
+        source: harness T1 (validation/over_segmentation.py)
+      - threshold: intentional_type_brand_share_max
+        value: 0.6
+        rationale: >
+          Suppress when ≥60% of starving campaigns carry campaign-type
+          (PMax/Shopping/Search) or brand/non-brand tokens — an intentional
+          structure. Mirrors harness T2 (intentional type/brand split).
+          Validated: these two gates removed all 3 false positives
+          (TIGHTEN->clean) on the 2026-05-09 snapshot (Voomi, 360 Cookware,
+          Toggl — all heavily geo/type-named).
+        source: harness T2 (validation/over_segmentation.py)
     overrides: []
 
   insufficient_conversions_for_strategy:
@@ -672,6 +703,7 @@ detectors:
     defaults:
       window_days: 30
       monthly_conv_min: 15
+      min_campaign_age_days: 14
       strategies:
         - TARGET_CPA
         - TARGET_ROAS
@@ -683,6 +715,18 @@ detectors:
           Conversions (no target); 15-30 = begin tCPA testing; 30+ =
           tCPA reliable. Below 15 the target strategy thrashes.
         source: research/benchmarks/industry-benchmarks.md (Jyll Saskin Gales)
+      - threshold: min_campaign_age_days
+        value: 14
+        rationale: >
+          A campaign visible < 2 weeks can't have accumulated a month of
+          conversions, so "insufficient conversions for the strategy" isn't
+          yet a fair claim — and paused campaigns aren't running the strategy
+          at all. The detector now also requires the campaign to be ENABLED a
+          majority of the window. Together these mirror harness T1 (active)
+          and T4 (age). Validated: removed both false positives (a 1-day
+          paused campaign and a 9-day high-value tROAS campaign) on the
+          2026-05-09 snapshot, TIGHTEN->clean.
+        source: harness T1+T4 (validation/insufficient_conversions.py)
     overrides:
       - when:
           business_type: nonprofit
