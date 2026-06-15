@@ -54,6 +54,12 @@ class Signal(BaseModel):
     message: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
     detected_at: Optional[datetime] = None
+    # Confidence framework (analysis/confidence.py): every signal carries an
+    # honest frame — what we proved, what we can't rule out, what to check.
+    confidence_tier: str = ""          # CONFIRMED / LIKELY / SUGGESTIVE
+    what_we_know: str = ""             # the factual finding (usually == message)
+    what_we_cant_rule_out: str = ""    # alternative explanations we can't eliminate
+    check_next: str = ""               # the specific thing for the marketer to verify
 
 
 class Pattern(BaseModel):

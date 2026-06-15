@@ -151,12 +151,15 @@ class Repository:
 
     def insert_signal(self, signal: Signal) -> None:
         self.db.execute(
-            """INSERT OR REPLACE INTO signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO signals VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 signal.signal_id, signal.account_id, signal.campaign_id,
                 signal.domain.value, signal.signal_type, signal.severity.value,
                 signal.value, signal.threshold, signal.message,
                 json.dumps(signal.data), signal.detected_at or datetime.now(timezone.utc),
+                signal.confidence_tier, signal.what_we_know,
+                signal.what_we_cant_rule_out, signal.check_next,
             ),
         )
 

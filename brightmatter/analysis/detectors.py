@@ -15,6 +15,7 @@ from brightmatter.analysis.change_detectors import (
     run_all_change_detectors,
     windowed,
 )
+from brightmatter.analysis.confidence import annotate as annotate_confidence
 from brightmatter.analysis.naming import split_fractions
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
@@ -69,7 +70,12 @@ def run_all_detectors(db: Database) -> list[Signal]:
     # the signal's account that sets `skip: true`, drop that signal here.
     # Detectors without a YAML entry (e.g. legacy ones not yet externalized)
     # are passed through unchanged.
-    return _apply_skip_overrides(db, signals)
+    out = _apply_skip_overrides(db, signals)
+    # Confidence framework: annotate every surviving signal with its tier and
+    # the what-we-know / can't-rule-out / check-next frame (roadmap 1.5).
+    for s in out:
+        annotate_confidence(s)
+    return out
 
 
 def _apply_skip_overrides(db: Database, signals: list[Signal]) -> list[Signal]:

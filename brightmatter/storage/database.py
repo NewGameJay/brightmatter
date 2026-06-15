@@ -113,7 +113,11 @@ CREATE TABLE IF NOT EXISTS signals (
     threshold    DOUBLE,
     message      TEXT,
     data_json    TEXT,
-    detected_at  TIMESTAMP DEFAULT current_timestamp
+    detected_at  TIMESTAMP DEFAULT current_timestamp,
+    confidence_tier        TEXT DEFAULT '',
+    what_we_know           TEXT DEFAULT '',
+    what_we_cant_rule_out  TEXT DEFAULT '',
+    check_next             TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS patterns (
@@ -223,6 +227,15 @@ class Database:
     def initialize(self) -> None:
         """Create all tables if they don't exist."""
         self.conn.execute(SCHEMA_SQL)
+        # Migrate pre-existing DBs to the confidence-framework columns.
+        for col in ("confidence_tier", "what_we_know",
+                    "what_we_cant_rule_out", "check_next"):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {col} TEXT DEFAULT ''"
+                )
+            except Exception:
+                pass
 
     def close(self) -> None:
         if self._conn is not None:
