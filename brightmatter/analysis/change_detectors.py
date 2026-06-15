@@ -50,6 +50,20 @@ def _data_anchor_date(db: Database) -> str | None:
     return row[0].isoformat()
 
 
+def windowed(sql: str, anchor: str) -> str:
+    """Rebind ``current_date`` in detector SQL to the data anchor date.
+
+    Substitutes the literal token ``current_date`` with ``DATE 'anchor'`` so
+    every ``date >= current_date - N`` window lands on the ingested data range
+    rather than real-world today. Without this, state-detectors silently emit
+    zero signals whenever the data is staler than their shortest window (which
+    happens routinely between ingest runs). Safe for plain strings,
+    pre-evaluated f-strings, and ``?``-parameterized queries — it touches only
+    the keyword. Callers must guard ``anchor is None`` (empty table) first.
+    """
+    return sql.replace("current_date", f"DATE '{anchor}'")
+
+
 def detect_budget_capped_change(db: Database) -> list[Signal]:
     """Week-over-week delta in avg(search_budget_lost_is) at the campaign level.
 
@@ -336,32 +350,40 @@ def detect_cvr_change(db: Database) -> list[Signal]:
     min_current_clicks = int(th["min_current_clicks"])
     min_prior_conv = float(th["min_prior_conv"])
     min_prior_cvr = float(th["min_prior_cvr"])
+    max_day_share = float(th["max_single_day_click_share"])
 
     anchor = _data_anchor_date(db)
     if anchor is None:
         return []
 
+    # max(clicks) per window is the busiest single day's clicks; when it holds
+    # more than max_single_day_click_share of the window's clicks, that window's
+    # CVR is one observation and any delta against it is noise/mean-reversion.
     rows = db.fetchall(f"""
         WITH cur AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(conversions) as cur_conv,
-                   sum(clicks) as cur_clicks
+                   sum(clicks) as cur_clicks,
+                   max(clicks) as cur_max_day_clicks
             FROM daily_metrics
             WHERE date > DATE '{anchor}' - {window}
               AND date <= DATE '{anchor}'
             GROUP BY account_id, campaign_id, campaign_name
             HAVING sum(clicks) >= {min_current_clicks}
+               AND max(clicks) <= {max_day_share} * sum(clicks)
         ),
         prior AS (
             SELECT account_id, campaign_id,
                    sum(conversions) as prior_conv,
-                   sum(clicks) as prior_clicks
+                   sum(clicks) as prior_clicks,
+                   max(clicks) as prior_max_day_clicks
             FROM daily_metrics
             WHERE date > DATE '{anchor}' - {2 * window}
               AND date <= DATE '{anchor}' - {window}
             GROUP BY account_id, campaign_id
             HAVING sum(clicks) >= {min_prior_clicks}
                AND sum(conversions) >= {min_prior_conv}
+               AND max(clicks) <= {max_day_share} * sum(clicks)
         )
         SELECT c.account_id, c.campaign_id, c.campaign_name,
                c.cur_conv / NULLIF(c.cur_clicks, 0) as cur_cvr,

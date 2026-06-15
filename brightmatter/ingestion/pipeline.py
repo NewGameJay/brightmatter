@@ -147,6 +147,25 @@ class IngestionPipeline:
                 results[account.account_id] = 0
         return results
 
+    def ingest_search_terms(self, account_ids: list[str] | None = None, days: int = 30) -> dict[str, int]:
+        """Pull per-search-term performance over the window (waste analysis)."""
+        accounts = self._resolve_accounts(account_ids)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
+        results = {}
+        for account in accounts:
+            try:
+                if self.is_live:
+                    count = self._ingest_search_terms_live(account.account_id, start_date, end_date)
+                else:
+                    count = 0
+                results[account.account_id] = count
+                logger.info("Ingested %d search-term rows for %s", count, account.account_id)
+            except Exception:
+                logger.exception("Failed to ingest search terms for %s", account.account_id)
+                results[account.account_id] = 0
+        return results
+
     def ingest_assets(self, account_ids: list[str] | None = None) -> dict[str, int]:
         """Pull extension/asset coverage per campaign."""
         accounts = self._resolve_accounts(account_ids)
@@ -346,6 +365,36 @@ class IngestionPipeline:
             )
             count += 1
         return count
+
+    def _ingest_search_terms_live(self, account_id: str, start_date: date, end_date: date) -> int:
+        from collections import defaultdict
+        gaql = queries.SEARCH_TERMS.format(start_date=start_date, end_date=end_date)
+        rows = self.client.query(account_id, gaql)
+        # GAQL returns one row per (search_term, campaign, date); aggregate to
+        # one row per (campaign, search_term) over the whole window.
+        agg: dict[tuple[str, str], dict] = defaultdict(
+            lambda: {"campaign_name": "", "impressions": 0, "clicks": 0,
+                     "cost_micros": 0, "conversions": 0.0, "conversions_value": 0.0}
+        )
+        for r in rows:
+            cid = str(r.campaign.id)
+            term = r.search_term_view.search_term
+            d = agg[(cid, term)]
+            d["campaign_name"] = r.campaign.name
+            d["impressions"] += int(r.metrics.impressions)
+            d["clicks"] += int(r.metrics.clicks)
+            d["cost_micros"] += int(r.metrics.cost_micros)
+            d["conversions"] += float(r.metrics.conversions)
+            d["conversions_value"] += float(r.metrics.conversions_value)
+        for (cid, term), d in agg.items():
+            self.repo.db.execute(
+                """INSERT OR REPLACE INTO search_terms VALUES
+                   (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)""",
+                (account_id, cid, d["campaign_name"], term, start_date, end_date,
+                 d["impressions"], d["clicks"], d["cost_micros"],
+                 d["conversions"], d["conversions_value"]),
+            )
+        return len(agg)
 
     def _ingest_daily_live(self, account_id: str, start_date: date, end_date: date) -> int:
         gaql = queries.DAILY_CAMPAIGN_METRICS.format(start_date=start_date, end_date=end_date)

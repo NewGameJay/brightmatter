@@ -132,6 +132,7 @@ detectors:
       window_days: 7
       avg_budget_lost_is_min: 0.35
       total_cost_micros_min: 500000000  # $500 over the 7-day window
+      min_conv_in_window: 5
     sources:
       - threshold: avg_budget_lost_is_min
         value: 0.35
@@ -146,6 +147,17 @@ detectors:
           $500 floor over 7 days ensures the IS metric is computed on
           enough impressions to be reliable.
         source: implementation default (legacy detector)
+      - threshold: min_conv_in_window
+        value: 5
+        rationale: >
+          The signal's implicit claim is "more budget would mean more
+          conversions." That's unverifiable on a campaign with almost no
+          conversions, so the disconfirmation harness (T3) rejects it below
+          5 conv in the 7-day window. Gate the detector at the same floor so
+          it doesn't recommend scaling budget where uplift can't be claimed.
+          Validated: removed the harness's T3-disconfirm signals, moving the
+          detector REVISE->MONITOR on the 2026-05-09 snapshot.
+        source: harness T3 (validation/budget_limited.py) volume-sufficiency floor
     overrides:
       - when:
           business_type: nonprofit
@@ -209,6 +221,7 @@ detectors:
       min_prior_clicks: 50
       min_prior_conv: 5
       min_prior_cvr: 0.005
+      max_single_day_click_share: 0.5
     sources:
       - threshold: window_days
         value: 7
@@ -217,6 +230,17 @@ detectors:
           Changing this also requires changing cvr_drop.current_window_days
           and cvr_drop.prior_window_days.
         source: implementation default (mirrors parent detector)
+      - threshold: max_single_day_click_share
+        value: 0.5
+        rationale: >
+          Drop the signal when one day holds >50% of a window's clicks: the
+          CVR for that window is then one observation, and a delta against it
+          is noise/mean-reversion, not a real shift. Mirrors harness T4
+          (single-day click dominance) and the cpa_spike single-day-share
+          gate. Validated: removed the lone false positive (TIGHTEN->MONITOR)
+          on the 2026-05-09 snapshot — a campaign whose prior week was a
+          single-day low outlier.
+        source: harness T4 (validation/cvr_drop.py single-day dominance)
       - threshold: min_pct_delta
         value: 0.15
         rationale: >
@@ -412,6 +436,7 @@ detectors:
       window_days: 14
       avg_budget_lost_is_min: 0.30
       min_days_capped: 7
+      min_conv_in_window: 15
     sources:
       - threshold: avg_budget_lost_is_min
         value: 0.30
@@ -426,6 +451,19 @@ detectors:
           Half the 14-day window. Below this, the "consistently" framing
           isn't earned.
         source: implementation default
+      - threshold: min_conv_in_window
+        value: 15
+        rationale: >
+          A budget cap only matters if uncapping would yield meaningful
+          additional conversions, so the harness (T3) only deems the claim
+          meaningful at 15+ conv over the window. NOTE: the harness's primary
+          confirming test (T1, actual spend-vs-budget utilization) is
+          currently DEAD because daily_budget_micros is ingested as all
+          zeros — so a budget-data ingestion gap, not detector quality, is
+          why this detector leans on T3. Until budget amounts are ingested,
+          gate at the T3 meaningfulness bar (15) so firing signals rest on a
+          test that can actually run.
+        source: harness T3 (validation/budget_capped.py) + daily_budget_micros ingestion gap
     overrides:
       - when:
           business_type: nonprofit
@@ -568,20 +606,42 @@ detectors:
 
   duplicate_primary_conversions:
     description: >
-      Account has 3+ ENABLED primary conversion actions, which inflates
-      reported conversions. Harness disconfirms when the multiple actions
-      are in distinct categories (LEAD + PURCHASE + APPOINTMENT) — legit
-      multi-goal tracking rather than duplication.
+      Account has 2+ ENABLED primary conversion actions IN THE SAME CATEGORY
+      (genuine same-goal double-counting) AND shows corroborating inflation:
+      implausibly high account CVR or near-zero value-per-conversion. Raw
+      count of primaries alone is not enough — distinct-category multi-goal
+      tracking is legitimate, and the harness showed same-category dupes
+      mostly do NOT inflate measured conversions unless impact is corroborated.
     defaults:
-      primary_count_min: 3
+      same_category_min: 2
+      inflation_cvr_min: 0.50
+      inflation_value_per_conv_max: 1.0
     sources:
-      - threshold: primary_count_min
-        value: 3
+      - threshold: same_category_min
+        value: 2
         rationale: >
-          One primary is ideal; two is acceptable for a hybrid model
-          (ecommerce + lead). Three or more strongly suggests duplication
-          or misconfiguration per Rhodes/Vallaeys conversion-audit guidance.
-        source: research/experts/tier1-expert-frameworks.md (Rhodes; Vallaeys)
+          Two primary actions in ONE category is the actual double-count
+          mechanism (e.g. two "Purchase" actions both counting). Distinct
+          categories (LEAD + PURCHASE) are legit multi-goal tracking — the
+          old count>=3-across-any-category rule fired on those as false
+          positives (harness T1). Aligns the detector with harness T1.
+        source: harness T1 (validation/duplicate_primary_conversions.py)
+      - threshold: inflation_cvr_min
+        value: 0.50
+        rationale: >
+          The signal claims double-counting INFLATES conversions. The harness
+          (T2) only confirms when account CVR > 50% (implausibly high). On the
+          2026-05-09 snapshot, same-category dupes alone showed normal CVR in
+          18/19 accounts — the inflation claim wasn't borne out. Require this
+          corroboration so the detector fires only where impact is visible.
+        source: harness T2 (CVR plausibility) confirm threshold
+      - threshold: inflation_value_per_conv_max
+        value: 1.0
+        rationale: >
+          Alternative corroboration (harness T3): value-per-conversion below
+          $1 (with value tracking present) signals junk/duplicate conversions
+          carrying no real value. Either this OR the CVR test qualifies.
+        source: harness T3 (value-per-conversion plausibility) confirm threshold
     overrides: []
 
   over_segmentation:
@@ -597,6 +657,8 @@ detectors:
       account_total_conv_min: 100
       account_campaigns_min: 5
       starving_share_min: 0.5
+      intentional_geo_share_max: 0.5
+      intentional_type_brand_share_max: 0.6
     sources:
       - threshold: per_campaign_conv_min
         value: 30
@@ -612,6 +674,23 @@ detectors:
           than half the campaigns starve, consolidation is the structural
           fix per smec/Lolk.
         source: research/experts/tier1-expert-frameworks.md (Lolk consolidation)
+      - threshold: intentional_geo_share_max
+        value: 0.5
+        rationale: >
+          Suppress the signal when ≥50% of the starving campaigns are
+          geo-named — that's a deliberate geo split, not accidental
+          fragmentation. Mirrors harness T1 (intentional geo segmentation).
+        source: harness T1 (validation/over_segmentation.py)
+      - threshold: intentional_type_brand_share_max
+        value: 0.6
+        rationale: >
+          Suppress when ≥60% of starving campaigns carry campaign-type
+          (PMax/Shopping/Search) or brand/non-brand tokens — an intentional
+          structure. Mirrors harness T2 (intentional type/brand split).
+          Validated: these two gates removed all 3 false positives
+          (TIGHTEN->clean) on the 2026-05-09 snapshot (Voomi, 360 Cookware,
+          Toggl — all heavily geo/type-named).
+        source: harness T2 (validation/over_segmentation.py)
     overrides: []
 
   insufficient_conversions_for_strategy:
@@ -624,6 +703,7 @@ detectors:
     defaults:
       window_days: 30
       monthly_conv_min: 15
+      min_campaign_age_days: 14
       strategies:
         - TARGET_CPA
         - TARGET_ROAS
@@ -635,6 +715,18 @@ detectors:
           Conversions (no target); 15-30 = begin tCPA testing; 30+ =
           tCPA reliable. Below 15 the target strategy thrashes.
         source: research/benchmarks/industry-benchmarks.md (Jyll Saskin Gales)
+      - threshold: min_campaign_age_days
+        value: 14
+        rationale: >
+          A campaign visible < 2 weeks can't have accumulated a month of
+          conversions, so "insufficient conversions for the strategy" isn't
+          yet a fair claim — and paused campaigns aren't running the strategy
+          at all. The detector now also requires the campaign to be ENABLED a
+          majority of the window. Together these mirror harness T1 (active)
+          and T4 (age). Validated: removed both false positives (a 1-day
+          paused campaign and a 9-day high-value tROAS campaign) on the
+          2026-05-09 snapshot, TIGHTEN->clean.
+        source: harness T1+T4 (validation/insufficient_conversions.py)
     overrides:
       - when:
           business_type: nonprofit
@@ -669,6 +761,7 @@ detectors:
       window_days: 30
       monthly_conv_min: 30
       monthly_cost_micros_min: 1000000000  # $1000
+      min_campaign_age_days: 21
     sources:
       - threshold: monthly_conv_min
         value: 30
@@ -682,6 +775,18 @@ detectors:
           $1k spend floor — avoids firing on small-spend test PMax
           campaigns where low convs are expected, not pathological.
         source: implementation default
+      - threshold: min_campaign_age_days
+        value: 21
+        rationale: >
+          Don't flag PMax campaigns still in their ramp. A campaign visible
+          for only days hasn't had time to accumulate 30 conv/month, so
+          "insufficient volume to optimize" is not yet a real claim — Google
+          guides 6+ weeks before judging PMax. Set to 21 to match the
+          disconfirmation harness's T4 ramp threshold so detector and harness
+          agree (every signal the harness would kill on age now never fires).
+          Validated: this gate removed all 14 false positives (REVISE→MONITOR)
+          in the 2026-05-09 snapshot, all of which were 4-20d-old campaigns.
+        source: harness T4 (validation/pmax_low_volume.py) + Google PMax ramp guidance
     overrides:
       - when:
           business_type: nonprofit
@@ -778,3 +883,114 @@ detectors:
           a config anomaly, not a real volume signal.
         source: Google Ad Grants policy + research/benchmarks/industry-benchmarks.md
         revisit: never (this should remain a skip)
+
+  pmax_conversion_inflation:
+    description: >
+      Within one account, PMax CVR is ≥3x the Search CVR over 30 days (both
+      channels with reliable volume). PMax inherits all primary conversion
+      actions by default and can count micro-conversions Search doesn't, so a
+      large same-account CVR gap is the observable inflation signature
+      (empirically: LOCKLY, 26K PMax vs 290 Search conversions). Harness
+      disconfirms when volume is thin, PMax & Search value-per-conversion are
+      similar (real conversions of equal worth), or the account has no
+      micro-conversion / many-per-click mechanism to drive inflation.
+    defaults:
+      window_days: 30
+      cvr_ratio_min: 3.0
+      min_pmax_clicks: 200
+      min_search_clicks: 200
+      min_pmax_conv: 15
+    sources:
+      - threshold: cvr_ratio_min
+        value: 3.0
+        rationale: >
+          PMax can legitimately convert above Search (shopping/retargeting
+          intent), so ~2x is plausible and not flagged. 3x+ is the inflection
+          where the gap usually reflects different conversion-action counting
+          rather than traffic quality. On the 2026-05-09 snapshot this fires
+          on 3 of 35 dual-channel accounts, incl. one at 73.6% PMax CVR
+          (19.7x) — implausible for real purchases.
+        source: empirical calibration (2026-05-09 snapshot) + PMax conversion-inheritance behavior
+        confidence: prior
+        revisit: >
+          If it fires on accounts where PMax is genuinely shopping-heavy and
+          value-per-conversion matches Search, raise to 4.0. Re-check after
+          ingesting per-campaign conversion-action attribution, which would
+          let the detector test the mechanism directly instead of by symptom.
+      - threshold: min_pmax_clicks
+        value: 200
+        rationale: >
+          Both channels need enough clicks for the CVR ratio to be stable
+          rather than small-sample noise.
+        source: implementation default
+      - threshold: min_search_clicks
+        value: 200
+        rationale: Same reliability floor for the Search baseline.
+        source: implementation default
+      - threshold: min_pmax_conv
+        value: 15
+        rationale: >
+          PMax needs a real conversion count for its CVR to be meaningful;
+          below 15 the ratio is dominated by a handful of conversions.
+        source: implementation default
+    overrides:
+      - when:
+          business_type: nonprofit
+        skip: true
+        confidence: prior
+        rationale: |
+          Grant accounts can't run PMax under Google Ad Grants policy.
+        source: Google Ad Grants policy
+        revisit: never (this should remain a skip)
+
+  search_terms_waste:
+    description: >
+      A material share of a campaign's spend went to search terms that never
+      converted over the window. The #1 audit finding across published
+      checklists. DATA DEPENDENCY: the search_terms table (ingest
+      --search-terms). SCAFFOLDED 2026-06 — code-complete but UNVALIDATED
+      against real search-term data; produces no signals until ingested.
+      Harness disconfirms when the "wasted" terms had too few clicks to judge
+      (noise) or the waste share is immaterial; the assisted-conversion blind
+      spot of last-click data is surfaced as an explicit caveat.
+    defaults:
+      window_days: 30
+      min_term_cost_micros: 50000000      # $50 — a single term must spend this to count
+      min_term_impressions: 100           # enough exposure that 0 conv is meaningful
+      min_total_waste_micros: 100000000   # $100 — absolute floor on flagged waste
+      waste_share_min: 0.15               # >=15% of campaign spend on zero-conv terms
+    sources:
+      - threshold: min_term_cost_micros
+        value: 50000000
+        rationale: >
+          A term needs ~$50 of spend before "zero conversions" is a confident
+          waste signal rather than an unlucky cheap term. Provisional pending
+          validation on real search-term data.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: min_term_impressions
+        value: 100
+        rationale: >
+          Separates real non-converting traffic from low-impression noise —
+          mirrors the harness's statistical-noise check.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: waste_share_min
+        value: 0.15
+        rationale: >
+          A few stray non-converting terms are normal; >=15% of campaign spend
+          on confirmed zero-converters is a systemic leak worth surfacing.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: min_total_waste_micros
+        value: 100000000
+        rationale: >
+          Absolute floor so the percentage gate doesn't fire on tiny campaigns
+          where 15% is only a few dollars.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+    overrides: []

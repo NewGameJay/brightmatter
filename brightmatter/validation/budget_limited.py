@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 # ── Tests ──
@@ -51,15 +51,16 @@ def test_cpa_plausibility(db: Database, account_id: str, campaign_id: str) -> Te
     Disconfirms the implicit "more budget → more conversions" by showing the
     cost-per-conversion is in a range that wouldn't survive scale.
     """
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(cost_micros)/1000000.0 as cost,
                sum(conversions) as conv,
                sum(clicks) as clicks
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     cost, conv, clicks = (row or (0, 0, 0))
@@ -94,13 +95,14 @@ def test_cpa_plausibility(db: Database, account_id: str, campaign_id: str) -> Te
 
 def test_volume_sufficiency(db: Database, account_id: str, campaign_id: str) -> TestResult:
     """T3 — Without enough conversions, "budget-limited" is unverifiable."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversions) as conv, sum(clicks) as clicks
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 7
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     conv, clicks = (row or (0, 0))
@@ -129,8 +131,9 @@ def test_volume_sufficiency(db: Database, account_id: str, campaign_id: str) -> 
 def test_budget_set_low_intentionally(db: Database, account_id: str, campaign_id: str) -> TestResult:
     """T4 — If daily_budget is far below the account's typical campaign budget,
     the campaign may be intentionally throttled, not undercapitalized."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT avg(daily_budget_micros)/1000000.0 as this_budget,
                (SELECT median(daily_budget_micros)/1000000.0
                   FROM daily_metrics
@@ -140,7 +143,7 @@ def test_budget_set_low_intentionally(db: Database, account_id: str, campaign_id
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 7
           AND daily_budget_micros IS NOT NULL
-        """,
+        """, anchor),
         [account_id, account_id, campaign_id],
     )
     this_b, median_b = (row or (None, None))

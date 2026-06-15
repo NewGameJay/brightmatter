@@ -10,17 +10,18 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_campaign_active(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT status, count(*) as days
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
         GROUP BY status
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     by_status = {r[0]: r[1] for r in rows}
@@ -37,12 +38,13 @@ def test_campaign_active(db: Database, account_id: str, campaign_id: str) -> Tes
 
 def test_value_per_conversion(db: Database, account_id: str, campaign_id: str) -> TestResult:
     """High value per conversion partially offsets low count for tROAS optimization."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversion_value) as v, sum(conversions) as c
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     val, conv = (row or (0, 0))
@@ -64,8 +66,9 @@ def test_value_per_conversion(db: Database, account_id: str, campaign_id: str) -
 
 def test_share_of_account_spend(db: Database, account_id: str, campaign_id: str) -> TestResult:
     """A small-spend PMax campaign is a test, not a structural problem."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         WITH camp_spend AS (
           SELECT campaign_id, sum(cost_micros)/1000000.0 as cost
           FROM daily_metrics
@@ -75,7 +78,7 @@ def test_share_of_account_spend(db: Database, account_id: str, campaign_id: str)
         SELECT
           (SELECT cost FROM camp_spend WHERE campaign_id = ?) as this_cost,
           (SELECT sum(cost) FROM camp_spend) as total_cost
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     this_cost, total_cost = (row or (0, 0))

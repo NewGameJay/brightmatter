@@ -98,6 +98,29 @@ WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
   AND ad_group_criterion.status = 'ENABLED'
 """
 
+# ── Search terms (waste analysis) ──
+#
+# Per search-term performance over the window. Drives detect_search_terms_waste:
+# terms with meaningful spend and zero conversions are budget leaks. Impressions
+# are pulled so the harness can separate real waste from statistical noise
+# (a term with a handful of impressions isn't a confident "zero-converter").
+
+SEARCH_TERMS = """
+SELECT
+  campaign.id,
+  campaign.name,
+  search_term_view.search_term,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  segments.date
+FROM search_term_view
+WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
+  AND campaign.status = 'ENABLED'
+"""
+
 # ── Tier 3: Change history ──
 
 CHANGE_EVENTS = """

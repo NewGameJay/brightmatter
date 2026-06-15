@@ -11,31 +11,24 @@ campaigns that haven't ramped yet.
 from __future__ import annotations
 
 import json
-import re
 
+from brightmatter.analysis.naming import BRAND_HINTS as _BRAND_HINTS
+from brightmatter.analysis.naming import GEO_HINTS as _GEO_HINTS
+from brightmatter.analysis.naming import TYPE_HINTS as _TYPE_HINTS
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
-
-
-_GEO_HINTS = re.compile(
-    r"\b(usa|us|uk|ca|eu|au|de|fr|es|it|nl|jp|kr|"
-    r"ny|ca|tx|fl|wa|or|ma|il|nj|geo|state|city|local|region|"
-    r"new[-_ ]york|los[-_ ]angeles|chicago|boston|miami|seattle|austin|dallas|denver)\b",
-    re.IGNORECASE,
-)
-_BRAND_HINTS = re.compile(r"\bbrand|nonbrand|non[-_ ]brand|generic|competitor\b", re.IGNORECASE)
-_TYPE_HINTS = re.compile(r"\bpmax|shopping|search|display|video|youtube|discovery|demand[-_ ]gen\b", re.IGNORECASE)
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def _starving_campaigns(db: Database, account_id: str) -> list[tuple[str, str, float]]:
+    anchor = anchor_date(db)
     return db.fetchall(
-        """
+        windowed("""
         SELECT campaign_id, campaign_name, sum(conversions) as conv
         FROM daily_metrics
         WHERE account_id = ? AND date >= current_date - 30 AND status = 'ENABLED'
         GROUP BY campaign_id, campaign_name
         HAVING sum(conversions) < 30 AND sum(conversions) > 0
-        """,
+        """, anchor),
         [account_id],
     )
 
@@ -79,8 +72,9 @@ def test_intentional_type_or_brand_split(db: Database, account_id: str) -> TestR
 
 def test_starving_campaigns_share_of_spend(db: Database, account_id: str) -> TestResult:
     """If starving campaigns are <10% of spend, they're tests/exploration, not core."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         WITH camp AS (
           SELECT campaign_id, sum(cost_micros)/1000000.0 as cost, sum(conversions) as conv
           FROM daily_metrics
@@ -91,7 +85,7 @@ def test_starving_campaigns_share_of_spend(db: Database, account_id: str) -> Tes
           sum(CASE WHEN conv < 30 THEN cost ELSE 0 END) as starving_cost,
           sum(cost) as total_cost
         FROM camp
-        """,
+        """, anchor),
         [account_id],
     )
     s_cost, t_cost = (row or (0, 0))

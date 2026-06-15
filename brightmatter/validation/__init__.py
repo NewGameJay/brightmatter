@@ -25,10 +25,14 @@ from brightmatter.validation.insufficient_conversions import (
     audit_insufficient_conversions_signals,
 )
 from brightmatter.validation.over_segmentation import audit_over_segmentation_signals
+from brightmatter.validation.pmax_conversion_inflation import (
+    audit_pmax_conversion_inflation_signals,
+)
 from brightmatter.validation.pmax_low_conv_volume_change import (
     audit_pmax_low_conv_volume_change_signals,
 )
 from brightmatter.validation.pmax_low_volume import audit_pmax_low_volume_signals
+from brightmatter.validation.search_terms_waste import audit_search_terms_waste_signals
 
 # Map detector key → audit function. Each function returns a list of audit
 # objects with a uniform interface: .signal_id, .account_id, .account_name,
@@ -49,6 +53,8 @@ AUDITS = {
     "insufficient_conv":            audit_insufficient_conversions_signals,
     "pmax_low_volume":              audit_pmax_low_volume_signals,
     "pmax_low_conv_volume_change":  audit_pmax_low_conv_volume_change_signals,
+    "pmax_conversion_inflation":    audit_pmax_conversion_inflation_signals,
+    "search_terms_waste":           audit_search_terms_waste_signals,
 }
 
 __all__ = ["AUDITS"]

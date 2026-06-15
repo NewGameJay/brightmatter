@@ -10,7 +10,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from brightmatter.analysis.change_detectors import run_all_change_detectors
+from brightmatter.analysis.change_detectors import (
+    _data_anchor_date,
+    run_all_change_detectors,
+    windowed,
+)
+from brightmatter.analysis.naming import split_fractions
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
 from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
@@ -51,6 +56,8 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_missing_extensions(db))
     signals.extend(detect_cross_account_outlier(db))
     signals.extend(detect_pmax_low_conversion_volume(db))
+    signals.extend(detect_pmax_conversion_inflation(db))
+    signals.extend(detect_search_terms_waste(db))
 
     # Phase 2 change-detectors: rolling-period comparisons that pair with
     # the Phase 1 state-detectors above. Both kinds of signals can fire
@@ -85,7 +92,10 @@ def _apply_skip_overrides(db: Database, signals: list[Signal]) -> list[Signal]:
 
 def detect_tracking_breaks(db: Database) -> list[Signal]:
     """Detect accounts where conversions dropped >80% overnight across all campaigns."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH daily AS (
             SELECT account_id, date,
                    sum(conversions) as total_conv,
@@ -108,7 +118,7 @@ def detect_tracking_breaks(db: Database) -> list[Signal]:
         SELECT * FROM comparison
         WHERE current_conv < prior_conv * 0.2
           AND current_clicks > prior_clicks * 0.7
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -161,7 +171,10 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → cpa_spike.
     """
     th = effective_thresholds("cpa_spike")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         WITH recent AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as recent_cpa,
@@ -190,7 +203,7 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
         FROM recent r
         JOIN baseline b ON r.account_id = b.account_id AND r.campaign_id = b.campaign_id
         WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])}
-    """)
+    """, anchor))
     signals = []
     mult = th['recent_cpa_multiplier']
     for r in rows:
@@ -215,7 +228,10 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → budget_limited_is.
     """
     th = effective_thresholds("budget_limited_is")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
                avg(search_budget_lost_is) as avg_budget_lost,
                avg(search_rank_lost_is) as avg_rank_lost,
@@ -226,7 +242,8 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
         GROUP BY account_id, campaign_id, campaign_name
         HAVING avg(search_budget_lost_is) > {float(th['avg_budget_lost_is_min'])}
            AND sum(cost_micros) > {int(th['total_cost_micros_min'])}
-    """)
+           AND sum(conversions) >= {float(th['min_conv_in_window'])}
+    """, anchor))
     signals = []
     bl_min = th['avg_budget_lost_is_min']
     for r in rows:
@@ -251,10 +268,13 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → cvr_drop.
     """
     th = effective_thresholds("cvr_drop")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     cur_w = int(th['current_window_days'])
     pri_w = int(th['prior_window_days'])
     window = cur_w + pri_w
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         WITH weekly AS (
             SELECT account_id, campaign_id, campaign_name,
                    CASE WHEN date >= current_date - {cur_w} THEN 'current' ELSE 'prior' END as period,
@@ -276,7 +296,7 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
           AND p.conv > {float(th['prior_conv_min'])}
           AND p.conv / NULLIF(p.clicks, 0) > {float(th['prior_cvr_min'])}
           AND c.conv / NULLIF(c.clicks, 0) < p.conv / NULLIF(p.clicks, 0) * {float(th['cvr_drop_ratio'])}
-    """)
+    """, anchor))
     signals = []
     ratio = th['cvr_drop_ratio']
     for r in rows:
@@ -314,7 +334,10 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
 
     # Pull candidates with a permissive SQL pass — apply per-account thresholds
     # in Python so vertical/tier overrides can tighten or loosen as configured.
-    candidates = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    candidates = db.fetchall(windowed("""
         WITH by_type AS (
             SELECT dm.account_id, dm.campaign_name,
                    CASE WHEN lower(dm.campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label,
@@ -346,7 +369,7 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
         FROM account_rollup ar
         LEFT JOIN accounts a USING (account_id)
         WHERE ar.brand_cost > 0 AND ar.nonbrand_cost > 0
-    """)
+    """, anchor))
 
     signals: list[Signal] = []
     for (acct_id, biz_type, spend_tier, vertical, acct_name,
@@ -448,7 +471,10 @@ def detect_pmax_channel_imbalance(db: Database) -> list[Signal]:
     """Flag PMax campaigns in ecommerce accounts with low Shopping allocation.
     Note: PMax channel breakdown requires asset group reporting; this is a proxy
     using overall PMax vs Shopping campaign spend ratios at the account level."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH spend_by_type AS (
             SELECT dm.account_id,
                    sum(CASE WHEN dm.campaign_type = 'PERFORMANCE_MAX' THEN dm.cost_micros ELSE 0 END) as pmax_spend,
@@ -466,7 +492,7 @@ def detect_pmax_channel_imbalance(db: Database) -> list[Signal]:
         WHERE a.business_type = 'ecommerce'
           AND s.pmax_spend > s.total_spend * 0.5
           AND s.shopping_spend < s.pmax_spend * 0.3
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         pmax_pct = r[1] / r[3] if r[3] else 0
@@ -491,9 +517,12 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → auto_applied_changes.
     """
     th = effective_thresholds("auto_applied_changes")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     window = int(th['window_days'])
     crit = int(th['critical_count'])
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, count(*) as auto_count,
                min(change_timestamp) as earliest,
                max(change_timestamp) as latest
@@ -503,7 +532,7 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
         GROUP BY account_id
         HAVING count(*) > 0
         ORDER BY count(*) DESC
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         severity = Severity.CRITICAL if r[1] > crit else Severity.WARNING
@@ -528,18 +557,28 @@ def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → budget_capped.
     """
     th = effective_thresholds("budget_capped")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     window = int(th['window_days'])
-    rows = db.fetchall(f"""
+    bl_min = float(th['avg_budget_lost_is_min'])
+    # Aggregate over the full window so sum(conversions) counts every day, not
+    # only capped days; days_capped / avg loss are restricted to capped days
+    # via CASE. The conversion floor keeps the signal to caps that actually
+    # gate meaningful volume (the harness's only functional confirming test,
+    # since daily_budget_micros is unavailable for the utilization check).
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
-               avg(search_budget_lost_is) as avg_budget_lost,
-               count(*) as days_checked
+               avg(CASE WHEN search_budget_lost_is > {bl_min}
+                        THEN search_budget_lost_is END) as avg_budget_lost,
+               count(CASE WHEN search_budget_lost_is > {bl_min} THEN 1 END) as days_checked
         FROM daily_metrics
         WHERE date >= current_date - {window}
           AND search_budget_lost_is IS NOT NULL
-          AND search_budget_lost_is > {float(th['avg_budget_lost_is_min'])}
         GROUP BY account_id, campaign_id, campaign_name
-        HAVING count(*) >= {int(th['min_days_capped'])}
-    """)
+        HAVING count(CASE WHEN search_budget_lost_is > {bl_min} THEN 1 END) >= {int(th['min_days_capped'])}
+           AND sum(conversions) >= {float(th['min_conv_in_window'])}
+    """, anchor))
     signals = []
     threshold = th['avg_budget_lost_is_min']
     for r in rows:
@@ -564,16 +603,37 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → insufficient_conversions_for_strategy.
     """
     th = effective_thresholds("insufficient_conversions_for_strategy")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     strategies_in = ", ".join(f"'{s}'" for s in th.get("strategies", []))
-    rows = db.fetchall(f"""
-        SELECT account_id, campaign_id, campaign_name, bidding_strategy,
-               sum(conversions) as monthly_conv
-        FROM daily_metrics
-        WHERE date >= current_date - {int(th['window_days'])}
-          AND bidding_strategy IN ({strategies_in})
-        GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
-        HAVING sum(conversions) < {float(th['monthly_conv_min'])}
-    """)
+    # Gate out campaigns that are paused (the strategy isn't even running) or
+    # too new to have accumulated a month of conversions — both produce low
+    # counts for reasons unrelated to a misconfigured strategy (harness T1/T4).
+    rows = db.fetchall(windowed(f"""
+        WITH agg AS (
+            SELECT account_id, campaign_id, campaign_name, bidding_strategy,
+                   sum(conversions) as monthly_conv,
+                   count(CASE WHEN status = 'ENABLED' THEN 1 END) as enabled_days,
+                   count(*) as total_days
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND bidding_strategy IN ({strategies_in})
+            GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
+            HAVING sum(conversions) < {float(th['monthly_conv_min'])}
+               AND count(CASE WHEN status = 'ENABLED' THEN 1 END) > count(*) * 0.5
+        ),
+        age AS (
+            SELECT account_id, campaign_id, (max(date) - min(date)) + 1 as age_days
+            FROM daily_metrics
+            GROUP BY account_id, campaign_id
+        )
+        SELECT agg.account_id, agg.campaign_id, agg.campaign_name,
+               agg.bidding_strategy, agg.monthly_conv
+        FROM agg
+        JOIN age USING (account_id, campaign_id)
+        WHERE age.age_days >= {int(th['min_campaign_age_days'])}
+    """, anchor))
     signals = []
     minimum = th['monthly_conv_min']
     for r in rows:
@@ -643,29 +703,58 @@ def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → duplicate_primary_conversions.
     """
     th = effective_thresholds("duplicate_primary_conversions")
-    minimum = int(th['primary_count_min'])
+    same_cat_min = int(th['same_category_min'])
+    cvr_min = float(th['inflation_cvr_min'])
+    vpc_max = float(th['inflation_value_per_conv_max'])
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     try:
         rows = db.fetchall(f"""
-            SELECT account_id, count(*) as primary_count,
+            SELECT account_id, category, count(*) as cat_count,
                    string_agg(action_name, ', ') as names
             FROM conversion_actions
-            WHERE primary_for_goal = true
-              AND status = 'ENABLED'
-            GROUP BY account_id
-            HAVING count(*) >= {minimum}
+            WHERE primary_for_goal = true AND status = 'ENABLED'
+            GROUP BY account_id, category
+            HAVING count(*) >= {same_cat_min}
         """)
     except Exception:
         return []
 
     signals = []
-    for r in rows:
+    seen: set[str] = set()
+    for acct, category, cat_count, names in rows:
+        if acct in seen:
+            continue
+        # Same-category duplication is only a problem if it actually inflates
+        # the numbers. Corroborate with performance: implausibly high account
+        # CVR (multi-counting) or near-zero value-per-conversion (junk convs).
+        perf = db.fetchone(windowed("""
+            SELECT sum(conversions), sum(clicks), sum(conversion_value)
+            FROM daily_metrics
+            WHERE account_id = ? AND date >= current_date - 30
+        """, anchor), [acct])
+        conv, clicks, value = (perf or (0, 0, 0))
+        conv, clicks, value = (conv or 0, clicks or 0, value or 0)
+        cvr = (conv / clicks) if clicks else 0
+        vpc = (value / conv) if conv else None
+        high_cvr = cvr > cvr_min
+        low_vpc = value > 0 and vpc is not None and vpc < vpc_max
+        if not (high_cvr or low_vpc):
+            continue
+        seen.add(acct)
+        reason = (f"account CVR {cvr:.0%} is implausibly high" if high_cvr
+                  else f"value/conversion is ${vpc:.2f}")
         signals.append(Signal(
-            signal_id=_id(), account_id=r[0],
+            signal_id=_id(), account_id=acct,
             domain=PatternDomain.LANDING_PAGE,
             signal_type="duplicate_primary_conversions", severity=Severity.WARNING,
-            value=float(r[1]), threshold=float(minimum),
-            message=f"{r[1]} primary conversion actions — likely double-counting: {r[2][:100]}",
-            data={"primary_count": r[1], "action_names": r[2]},
+            value=float(cat_count), threshold=float(same_cat_min),
+            message=f"{cat_count} primary '{category}' conversion actions (same goal) — "
+                    f"{reason}, likely double-counting: {names[:80]}",
+            data={"category": category, "same_category_count": cat_count,
+                  "action_names": names, "account_cvr_30d": round(cvr, 4),
+                  "value_per_conv": round(vpc, 2) if vpc is not None else None},
             detected_at=_now(),
         ))
     return signals
@@ -676,7 +765,10 @@ def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
 
 def detect_missing_conversion_value(db: Database) -> list[Signal]:
     """Flag accounts with conversions but zero conversion value (missing value tracking)."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         SELECT account_id,
                sum(conversions) as total_conv,
                sum(conversion_value) as total_value,
@@ -687,7 +779,7 @@ def detect_missing_conversion_value(db: Database) -> list[Signal]:
         HAVING sum(conversions) > 50
            AND sum(conversion_value) = 0
            AND sum(cost_micros) > 5000000000
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -711,7 +803,10 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → over_segmentation.
     """
     th = effective_thresholds("over_segmentation")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         WITH campaign_conv AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(conversions) as monthly_conv
@@ -737,16 +832,36 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
                starving_campaigns * 1.0 / total_campaigns as starving_pct
         FROM account_summary
         WHERE starving_campaigns * 1.0 / total_campaigns > {float(th['starving_share_min'])}
-    """)
+    """, anchor))
+    geo_max = float(th['intentional_geo_share_max'])
+    tb_max = float(th['intentional_type_brand_share_max'])
+    per_camp_min = float(th['per_campaign_conv_min'])
     signals = []
     for r in rows:
+        acct = r[0]
+        # Suppress when the starving campaigns are predominantly geo- or
+        # type/brand-named: that's a deliberate split, not accidental
+        # fragmentation (harness T1/T2). Same starving definition as the query.
+        starving_names = [row[0] for row in db.fetchall(windowed(f"""
+            SELECT campaign_name
+            FROM daily_metrics
+            WHERE account_id = ? AND date >= current_date - {int(th['window_days'])}
+              AND status = 'ENABLED'
+            GROUP BY campaign_id, campaign_name
+            HAVING sum(conversions) < {per_camp_min} AND sum(conversions) > 0
+        """, anchor), [acct])]
+        geo_frac, tb_frac = split_fractions(starving_names)
+        if geo_frac >= geo_max or tb_frac >= tb_max:
+            continue
         signals.append(Signal(
-            signal_id=_id(), account_id=r[0],
+            signal_id=_id(), account_id=acct,
             domain=PatternDomain.CAMPAIGN_STRUCTURE,
             signal_type="over_segmentation", severity=Severity.WARNING,
             value=r[5], threshold=0.5,
             message=f"{r[3]}/{r[1]} campaigns have <30 conv/month ({r[5]:.0%} starving) despite {r[2]:.0f} total — consider consolidation",
-            data={"total_campaigns": r[1], "total_conv": r[2], "starving": r[3], "starving_pct": r[5]},
+            data={"total_campaigns": r[1], "total_conv": r[2], "starving": r[3],
+                  "starving_pct": r[5], "starving_geo_frac": round(geo_frac, 2),
+                  "starving_type_brand_frac": round(tb_frac, 2)},
             detected_at=_now(),
         ))
     return signals
@@ -759,7 +874,10 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
 
 def detect_missing_brand_separation(db: Database) -> list[Signal]:
     """Flag accounts with no dedicated brand campaign despite having brand-like performance."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH campaign_perf AS (
             SELECT account_id, campaign_id, campaign_name, campaign_type,
                    sum(conversions) / NULLIF(sum(clicks), 0) as cvr,
@@ -784,7 +902,7 @@ def detect_missing_brand_separation(db: Database) -> list[Signal]:
         FROM account_brand
         WHERE has_brand_campaign = 0
           AND max_cvr > 0.10
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -804,7 +922,10 @@ def detect_missing_brand_separation(db: Database) -> list[Signal]:
 
 def detect_campaign_type_gaps(db: Database) -> list[Signal]:
     """Flag accounts missing expected campaign types based on their profile."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         SELECT account_id,
                count(DISTINCT CASE WHEN campaign_type = 'SEARCH' THEN campaign_id END) as search_count,
                count(DISTINCT CASE WHEN campaign_type = 'PERFORMANCE_MAX' THEN campaign_id END) as pmax_count,
@@ -816,7 +937,7 @@ def detect_campaign_type_gaps(db: Database) -> list[Signal]:
           AND status = 'ENABLED'
         GROUP BY account_id
         HAVING sum(cost_micros) > 10000000000
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         acct, search, pmax, shopping, total, spend = r
@@ -848,8 +969,11 @@ def detect_campaign_type_gaps(db: Database) -> list[Signal]:
 
 def detect_broad_without_smart_bidding(db: Database) -> list[Signal]:
     """Flag campaigns using broad match keywords with manual bidding."""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     try:
-        rows = db.fetchall("""
+        rows = db.fetchall(windowed("""
             SELECT kc.account_id, kc.campaign_id, kc.campaign_name,
                    kc.broad_count, kc.keyword_count,
                    dm.bidding_strategy
@@ -861,7 +985,7 @@ def detect_broad_without_smart_bidding(db: Database) -> list[Signal]:
             ) dm ON kc.account_id = dm.account_id AND kc.campaign_id = dm.campaign_id
             WHERE kc.broad_count > 0
               AND dm.bidding_strategy IN ('MANUAL_CPC', 'MANUAL_CPM', 'MAXIMIZE_CLICKS')
-        """)
+        """, anchor))
     except Exception:
         return []
     signals = []
@@ -953,7 +1077,10 @@ def detect_missing_extensions(db: Database) -> list[Signal]:
 
 def detect_cross_account_outlier(db: Database) -> list[Signal]:
     """Flag accounts whose CPA is significantly worse than the peer group."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH account_perf AS (
             SELECT account_id,
                    sum(cost_micros) / 1000000.0 as cost,
@@ -975,7 +1102,7 @@ def detect_cross_account_outlier(db: Database) -> list[Signal]:
         FROM account_perf ap, stats s
         WHERE ap.cpa > s.mean_cpa + 2 * s.std_cpa
           AND s.std_cpa > 0
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         acct, cpa, cost, conv, mean_cpa, std_cpa = r
@@ -1001,19 +1128,39 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → pmax_low_conv_volume.
     """
     th = effective_thresholds("pmax_low_conv_volume")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     minimum = th['monthly_conv_min']
-    rows = db.fetchall(f"""
-        SELECT account_id, campaign_id, campaign_name,
-               sum(conversions) as monthly_conv,
-               sum(cost_micros) / 1000000.0 as monthly_cost
-        FROM daily_metrics
-        WHERE date >= current_date - {int(th['window_days'])}
-          AND campaign_type = 'PERFORMANCE_MAX'
-          AND status = 'ENABLED'
-        GROUP BY account_id, campaign_id, campaign_name
-        HAVING sum(conversions) < {float(minimum)}
-           AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
-    """)
+    # Age gate: a PMax campaign still in its ramp hasn't had time to reach
+    # 30 conv/month, so "insufficient volume to optimize" isn't yet a real
+    # claim. Compute age from the campaign's full data history (any status),
+    # matching harness T4, and require it to clear min_campaign_age_days.
+    rows = db.fetchall(windowed(f"""
+        WITH agg AS (
+            SELECT account_id, campaign_id, campaign_name,
+                   sum(conversions) as monthly_conv,
+                   sum(cost_micros) / 1000000.0 as monthly_cost
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND campaign_type = 'PERFORMANCE_MAX'
+              AND status = 'ENABLED'
+            GROUP BY account_id, campaign_id, campaign_name
+            HAVING sum(conversions) < {float(minimum)}
+               AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
+        ),
+        age AS (
+            SELECT account_id, campaign_id,
+                   (max(date) - min(date)) + 1 as age_days
+            FROM daily_metrics
+            GROUP BY account_id, campaign_id
+        )
+        SELECT agg.account_id, agg.campaign_id, agg.campaign_name,
+               agg.monthly_conv, agg.monthly_cost
+        FROM agg
+        JOIN age USING (account_id, campaign_id)
+        WHERE age.age_days >= {int(th['min_campaign_age_days'])}
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -1023,6 +1170,137 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
             value=r[3], threshold=float(minimum),
             message=f"PMax '{r[2]}' has only {r[3]:.0f} conv/month on ${r[4]:,.0f} spend — needs {minimum:g}+ for Smart Bidding to optimize",
             data={"campaign_id": r[1], "monthly_conv": r[3], "monthly_cost": r[4]},
+            detected_at=_now(),
+        ))
+    return signals
+
+
+# ── Detector: PMax Conversion Inflation ──
+# Research: PMax inherits all primary conversion actions by default and counts
+# micro-conversions Search doesn't, inflating its apparent CVR/ROAS. Empirically
+# found in LOCKLY (26K PMax vs 290 Search conversions). Compare PMax vs Search
+# CVR within the same account: a large gap is the observable inflation signature.
+
+def detect_pmax_conversion_inflation(db: Database) -> list[Signal]:
+    """Flag accounts where PMax CVR is implausibly higher than Search CVR.
+
+    PMax and Search bid in the same auctions for the same advertiser; PMax can
+    convert somewhat higher (shopping/retargeting mix), but a multiple-x gap
+    usually means PMax is counting conversion actions Search isn't.
+
+    Thresholds: config/thresholds.yaml → pmax_conversion_inflation.
+    """
+    th = effective_thresholds("pmax_conversion_inflation")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
+        WITH agg AS (
+            SELECT account_id, campaign_type,
+                   sum(conversions) as conv, sum(clicks) as clk,
+                   sum(conversion_value) as val
+            FROM daily_metrics
+            WHERE date >= current_date - {int(th['window_days'])}
+              AND campaign_type IN ('PERFORMANCE_MAX', 'SEARCH')
+            GROUP BY account_id, campaign_type
+        )
+        SELECT p.account_id,
+               p.conv as pmax_conv, p.clk as pmax_clk, p.val as pmax_val,
+               s.conv as search_conv, s.clk as search_clk, s.val as search_val,
+               (p.conv / NULLIF(p.clk, 0)) as pmax_cvr,
+               (s.conv / NULLIF(s.clk, 0)) as search_cvr
+        FROM agg p
+        JOIN agg s ON p.account_id = s.account_id
+        WHERE p.campaign_type = 'PERFORMANCE_MAX' AND s.campaign_type = 'SEARCH'
+          AND p.clk >= {int(th['min_pmax_clicks'])}
+          AND s.clk >= {int(th['min_search_clicks'])}
+          AND p.conv >= {float(th['min_pmax_conv'])}
+          AND (p.conv / NULLIF(p.clk, 0))
+              >= {float(th['cvr_ratio_min'])} * (s.conv / NULLIF(s.clk, 0))
+          AND (s.conv / NULLIF(s.clk, 0)) > 0
+    """, anchor))
+    signals = []
+    ratio_min = th['cvr_ratio_min']
+    for r in rows:
+        acct, pconv, pclk, pval, sconv, sclk, sval, pcvr, scvr = r
+        ratio = pcvr / scvr if scvr else 0.0
+        signals.append(Signal(
+            signal_id=_id(), account_id=acct,
+            domain=PatternDomain.PERFORMANCE_MAX,
+            signal_type="pmax_conversion_inflation", severity=Severity.WARNING,
+            value=ratio, threshold=float(ratio_min),
+            message=(f"PMax CVR {pcvr:.1%} is {ratio:.1f}x Search CVR {scvr:.1%} in the same account "
+                     f"({pconv:.0f} PMax vs {sconv:.0f} Search conv) — PMax may be counting "
+                     f"conversion actions Search isn't (micro-conversion inflation)"),
+            data={"pmax_cvr": pcvr, "search_cvr": scvr, "cvr_ratio": ratio,
+                  "pmax_conv": pconv, "search_conv": sconv,
+                  "pmax_value_per_conv": (pval / pconv) if pconv else None,
+                  "search_value_per_conv": (sval / sconv) if sconv else None},
+            detected_at=_now(),
+        ))
+    return signals
+
+
+# ── Detector: Search Terms Waste ──
+# Research: the #1 audit finding across every published checklist — spend on
+# search terms that never convert. DATA DEPENDENCY: the `search_terms` table,
+# populated by `ingest --search-terms` (search_term_view GAQL). Until that is
+# ingested the table is empty and this detector produces no signals. SCAFFOLDED
+# 2026-06: detector + harness are code-complete but UNVALIDATED against real
+# search-term data — validate after the first search_term_view ingest.
+
+def detect_search_terms_waste(db: Database) -> list[Signal]:
+    """Flag campaigns where a material share of spend went to zero-conversion terms.
+
+    Thresholds: config/thresholds.yaml → search_terms_waste.
+    """
+    th = effective_thresholds("search_terms_waste")
+    min_term_cost = int(th['min_term_cost_micros'])
+    min_term_impr = int(th['min_term_impressions'])
+    min_total_waste = int(th['min_total_waste_micros'])
+    waste_share_min = float(th['waste_share_min'])
+    # A term counts as "wasted" when it has real exposure (>= min impressions),
+    # meaningful spend (>= min cost), and zero conversions over the window.
+    waste_pred = (f"st.conversions = 0 AND st.cost_micros >= {min_term_cost} "
+                  f"AND st.impressions >= {min_term_impr}")
+    try:
+        rows = db.fetchall(f"""
+            WITH latest AS (SELECT max(window_end) as w FROM search_terms),
+            camp AS (
+                SELECT st.account_id, st.campaign_id, st.campaign_name,
+                       sum(st.cost_micros) as total_cost,
+                       sum(CASE WHEN {waste_pred} THEN st.cost_micros ELSE 0 END) as waste_cost,
+                       sum(CASE WHEN {waste_pred} THEN st.clicks ELSE 0 END) as waste_clicks,
+                       count(CASE WHEN {waste_pred} THEN 1 END) as waste_terms
+                FROM search_terms st, latest
+                WHERE st.window_end = latest.w
+                GROUP BY st.account_id, st.campaign_id, st.campaign_name
+            )
+            SELECT account_id, campaign_id, campaign_name,
+                   total_cost, waste_cost, waste_clicks, waste_terms
+            FROM camp
+            WHERE waste_cost >= {min_total_waste}
+              AND waste_cost >= {waste_share_min} * NULLIF(total_cost, 0)
+            ORDER BY waste_cost DESC
+        """)
+    except Exception:
+        # search_terms not yet ingested / table absent — no signals.
+        return []
+    signals = []
+    for r in rows:
+        acct, cid, cname, total_cost, waste_cost, waste_clicks, waste_terms = r
+        share = (waste_cost / total_cost) if total_cost else 0.0
+        signals.append(Signal(
+            signal_id=_id(), account_id=acct, campaign_id=cid,
+            domain=PatternDomain.NON_BRANDED_SEARCH,
+            signal_type="search_terms_waste", severity=Severity.WARNING,
+            value=waste_cost / 1_000_000, threshold=min_total_waste / 1_000_000,
+            message=(f"Campaign '{cname}': ${waste_cost / 1e6:,.0f} ({share:.0%} of spend) on "
+                     f"{waste_terms} zero-conversion search terms ({waste_clicks:.0f} clicks) — "
+                     f"review and add negatives"),
+            data={"campaign_id": cid, "total_cost": total_cost / 1e6,
+                  "waste_cost": waste_cost / 1e6, "waste_share": share,
+                  "waste_terms": waste_terms, "waste_clicks": waste_clicks},
             detected_at=_now(),
         ))
     return signals

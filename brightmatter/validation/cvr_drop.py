@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 # ── Tests ──
@@ -24,8 +24,9 @@ def test_tracking_change_in_window(db: Database, account_id: str) -> TestResult:
     CVR drop coincident with a conversion-tracking change is more likely a
     measurement artifact than a real degradation.
     """
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT change_timestamp, change_type, resource_type, actor
         FROM change_events
         WHERE account_id = ?
@@ -33,7 +34,7 @@ def test_tracking_change_in_window(db: Database, account_id: str) -> TestResult:
           AND (upper(resource_type) LIKE '%CONVERSION%' OR upper(change_type) LIKE '%CONVERSION%')
         ORDER BY change_timestamp DESC
         LIMIT 10
-        """,
+        """, anchor),
         [account_id],
     )
     ev = [{"timestamp": str(r[0]), "change_type": r[1],
@@ -57,13 +58,14 @@ def test_campaign_type_stable(db: Database, account_id: str, campaign_id: str) -
     A switch from Search to PMax (or a bidding-strategy change) shifts the
     traffic mix, which can drop apparent CVR without any real degradation.
     """
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT DISTINCT campaign_type, bidding_strategy
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 14
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     ev = [{"campaign_type": r[0], "bidding_strategy": r[1]} for r in rows]
@@ -101,8 +103,9 @@ def test_prior_week_outlier(db: Database, account_id: str, campaign_id: str) -> 
     If the prior 7d had unusually high CVR vs the broader 30d, the "drop" is
     just regression to the mean, not degradation.
     """
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         WITH weeks AS (
             SELECT
                 CASE
@@ -121,7 +124,7 @@ def test_prior_week_outlier(db: Database, account_id: str, campaign_id: str) -> 
         FROM weeks
         WHERE bucket != 'older'
         GROUP BY bucket
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     by_bucket = {b: (c or 0, k or 0) for b, c, k in rows}
