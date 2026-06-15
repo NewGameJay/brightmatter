@@ -183,19 +183,59 @@ class IngestionPipeline:
         return results
 
     def classify_accounts(self) -> int:
-        """Infer business type and vertical from campaign names, conversion actions, campaign types."""
+        """Infer business type, vertical, and spend tier for each account.
+
+        business_type/vertical come from names + conversion actions + URLs;
+        spend_tier is derived from observed 30-day spend (it can't be known at
+        discovery time, before metrics exist).
+        """
         accounts = self.repo.list_accounts()
+        row = self.repo.db.fetchone("SELECT max(date) FROM daily_metrics")
+        anchor = row[0] if row and row[0] else None
         classified = 0
         for account in accounts:
             btype, vertical = self._classify_account(account.account_id)
+            tier = self._spend_tier(account.account_id, anchor)
+            sets, params = [], []
             if btype != "unknown":
+                sets += ["business_type = ?", "vertical = ?"]
+                params += [btype, vertical]
+            if tier is not None:
+                sets.append("spend_tier = ?")
+                params.append(tier)
+            if sets:
+                params.append(account.account_id)
                 self.repo.db.execute(
-                    "UPDATE accounts SET business_type = ?, vertical = ? WHERE account_id = ?",
-                    [btype, vertical, account.account_id],
+                    f"UPDATE accounts SET {', '.join(sets)} WHERE account_id = ?", params
                 )
-                classified += 1
+                if btype != "unknown":
+                    classified += 1
         logger.info("Classified %d/%d accounts", classified, len(accounts))
         return classified
+
+    def _spend_tier(self, account_id: str, anchor) -> str | None:
+        """Map an account's observed 30-day spend to a SpendTier bucket.
+
+        Returns None when there's no data to base a tier on (leaves the
+        existing value untouched rather than mis-tiering to <5k).
+        """
+        if anchor is None:
+            return None
+        row = self.repo.db.fetchone(
+            f"""SELECT sum(cost_micros) FROM daily_metrics
+                WHERE account_id = ? AND date > DATE '{anchor}' - 30 AND date <= DATE '{anchor}'""",
+            [account_id],
+        )
+        if not row or row[0] is None:
+            return None
+        monthly = row[0] / 1_000_000
+        if monthly < 5_000:
+            return SpendTier.MICRO.value
+        if monthly < 25_000:
+            return SpendTier.SMALL.value
+        if monthly < 100_000:
+            return SpendTier.MID.value
+        return SpendTier.LARGE.value
 
     def _classify_account(self, account_id: str) -> tuple[str, str]:
         """Classify an account via brightmatter.ingestion.classifier.
