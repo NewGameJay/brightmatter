@@ -115,11 +115,11 @@ SELECT
   metrics.clicks,
   metrics.cost_micros,
   metrics.conversions,
-  metrics.conversions_value,
-  segments.date
+  metrics.conversions_value
 FROM search_term_view
 WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
   AND campaign.status = 'ENABLED'
+  AND metrics.cost_micros > 1000000
 """
 
 # ── Tier 3: Change history ──

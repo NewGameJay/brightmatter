@@ -407,34 +407,25 @@ class IngestionPipeline:
         return count
 
     def _ingest_search_terms_live(self, account_id: str, start_date: date, end_date: date) -> int:
-        from collections import defaultdict
+        # GAQL aggregates over the window (no segments.date) and pre-filters to
+        # terms with real spend, so each row is already one (campaign, term).
         gaql = queries.SEARCH_TERMS.format(start_date=start_date, end_date=end_date)
         rows = self.client.query(account_id, gaql)
-        # GAQL returns one row per (search_term, campaign, date); aggregate to
-        # one row per (campaign, search_term) over the whole window.
-        agg: dict[tuple[str, str], dict] = defaultdict(
-            lambda: {"campaign_name": "", "impressions": 0, "clicks": 0,
-                     "cost_micros": 0, "conversions": 0.0, "conversions_value": 0.0}
-        )
-        for r in rows:
-            cid = str(r.campaign.id)
-            term = r.search_term_view.search_term
-            d = agg[(cid, term)]
-            d["campaign_name"] = r.campaign.name
-            d["impressions"] += int(r.metrics.impressions)
-            d["clicks"] += int(r.metrics.clicks)
-            d["cost_micros"] += int(r.metrics.cost_micros)
-            d["conversions"] += float(r.metrics.conversions)
-            d["conversions_value"] += float(r.metrics.conversions_value)
-        for (cid, term), d in agg.items():
-            self.repo.db.execute(
+        params = [
+            (account_id, str(r.campaign.id), r.campaign.name,
+             r.search_term_view.search_term, start_date, end_date,
+             int(r.metrics.impressions), int(r.metrics.clicks),
+             int(r.metrics.cost_micros), float(r.metrics.conversions),
+             float(r.metrics.conversions_value))
+            for r in rows
+        ]
+        if params:
+            self.repo.db.conn.executemany(
                 """INSERT OR REPLACE INTO search_terms VALUES
                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)""",
-                (account_id, cid, d["campaign_name"], term, start_date, end_date,
-                 d["impressions"], d["clicks"], d["cost_micros"],
-                 d["conversions"], d["conversions_value"]),
+                params,
             )
-        return len(agg)
+        return len(params)
 
     def _ingest_daily_live(self, account_id: str, start_date: date, end_date: date) -> int:
         gaql = queries.DAILY_CAMPAIGN_METRICS.format(start_date=start_date, end_date=end_date)
