@@ -134,17 +134,18 @@ class Repository:
         if not events:
             return 0
         now = datetime.now(timezone.utc)
-        for e in events:
-            self.db.execute(
-                """INSERT OR IGNORE INTO change_events VALUES
-                   (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    e.account_id, e.change_id, e.change_timestamp,
-                    e.change_type, e.resource_type, e.resource_name,
-                    e.campaign_id, e.campaign_name, e.actor.value,
-                    e.actor_email, e.old_value, e.new_value, now,
-                ),
-            )
+        params = [
+            (e.account_id, e.change_id, e.change_timestamp,
+             e.change_type, e.resource_type, e.resource_name,
+             e.campaign_id, e.campaign_name, e.actor.value,
+             e.actor_email, e.old_value, e.new_value, now)
+            for e in events
+        ]
+        self.db.conn.executemany(
+            """INSERT OR IGNORE INTO change_events VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
         return len(events)
 
     # ── Signals ──

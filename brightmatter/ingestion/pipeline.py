@@ -110,9 +110,13 @@ class IngestionPipeline:
         return results
 
     def ingest_changes(self, account_ids: list[str] | None = None, days: int = 30) -> dict[str, int]:
-        """Tier 3: Pull change history events. API limit: 30 days max."""
+        """Tier 3: Pull change history events.
+
+        Google's change_event API rejects start dates "older than 30 days" —
+        and exactly 30 days hits that boundary, so cap at 28 for margin.
+        """
         accounts = self._resolve_accounts(account_ids)
-        capped_days = min(days, 30)
+        capped_days = min(days, 28)
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=capped_days)
         results = {}

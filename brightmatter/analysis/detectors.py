@@ -528,6 +528,7 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
         return []
     window = int(th['window_days'])
     crit = int(th['critical_count'])
+    min_changes = int(th['min_changes'])
     rows = db.fetchall(windowed(f"""
         SELECT account_id, count(*) as auto_count,
                min(change_timestamp) as earliest,
@@ -536,7 +537,7 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
         WHERE actor = 'auto_applied'
           AND change_timestamp >= current_date - {window}
         GROUP BY account_id
-        HAVING count(*) > 0
+        HAVING count(*) >= {min_changes}
         ORDER BY count(*) DESC
     """, anchor))
     signals = []

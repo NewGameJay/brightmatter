@@ -586,22 +586,34 @@ detectors:
 
   auto_applied_changes:
     description: >
-      Account has auto-applied changes from Google's recommendation system
-      in the last 30 days. Risk signal — Google's auto-applied changes can
-      silently degrade performance. Harness disconfirms when outcomes
-      didn't actually move or the changes are too recent to measure.
+      Google's recommendation system auto-applied >= 5 changes to the account
+      in the last 30 days. CONFIRMED-tier factual signal (the change-history
+      actor field is a direct log, not an inference) — "Google made these
+      changes, review them and opt out of recommendation types that don't fit."
+      Whether the changes helped or hurt is unknowable from Google Ads data, so
+      the harness validates the FACT and its review-worthiness (volume,
+      substantive resource types, Google's share of all changes), not impact.
     defaults:
       window_days: 30
-      critical_count: 5     # ≥5 changes = critical, else warning
+      min_changes: 5        # fire floor — below this it's not worth a review
+      critical_count: 50    # heavy auto-management (≈ median is ~50/mo)
     sources:
-      - threshold: critical_count
+      - threshold: min_changes
         value: 5
         rationale: >
-          One or two auto-changes are normal; 5+ in a month indicates
-          Google is making sustained structural modifications worth a
-          human review (Vallaeys' "Google's defaults quietly drain budget"
-          observation).
+          One or two auto-changes are normal noise; 5+ in a month is the
+          Vallaeys "sustained structural modifications worth a human review"
+          line. Below it the signal isn't actionable. (Was firing at >0, which
+          flagged ~89% of accounts indiscriminately.)
         source: research/experts/tier1-expert-frameworks.md (Vallaeys)
+      - threshold: critical_count
+        value: 50
+        rationale: >
+          Escalate to CRITICAL when Google is heavily managing the account —
+          ~50/month is the observed median across 136 auto-applying accounts,
+          so above it the account is in the top half of Google-driven change
+          volume and most warrants an opt-out review.
+        source: research/experts/tier1-expert-frameworks.md (Vallaeys) + 2026-06-15 observed distribution
     overrides: []
 
   duplicate_primary_conversions:
