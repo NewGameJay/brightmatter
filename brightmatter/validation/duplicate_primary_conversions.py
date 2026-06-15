@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_distinct_categories(db: Database, account_id: str) -> TestResult:
@@ -52,12 +52,13 @@ def test_distinct_categories(db: Database, account_id: str) -> TestResult:
 
 def test_inflated_count_vs_clicks(db: Database, account_id: str) -> TestResult:
     """If conversions/clicks exceeds plausible (>40% across the account), suspect double-counting."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversions) as conv, sum(clicks) as clicks
         FROM daily_metrics
         WHERE account_id = ? AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id],
     )
     conv, clicks = (row or (0, 0))
@@ -82,12 +83,13 @@ def test_inflated_count_vs_clicks(db: Database, account_id: str) -> TestResult:
 
 def test_value_per_conversion(db: Database, account_id: str) -> TestResult:
     """Same-goal duplication often produces unrealistically low value-per-conversion."""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversions) as conv, sum(conversion_value) as value
         FROM daily_metrics
         WHERE account_id = ? AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id],
     )
     conv, val = (row or (0, 0))

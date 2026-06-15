@@ -11,18 +11,19 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_actual_spend_at_cap(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT avg(cost_micros / NULLIF(daily_budget_micros, 0)) as utilization
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 14
           AND daily_budget_micros IS NOT NULL AND daily_budget_micros > 0
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     util = (row[0] if row and row[0] is not None else None)
@@ -41,14 +42,15 @@ def test_actual_spend_at_cap(db: Database, account_id: str, campaign_id: str) ->
 
 
 def test_rank_loss_share(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT avg(search_budget_lost_is) as bl, avg(search_rank_lost_is) as rl
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
           AND date >= current_date - 14
           AND search_budget_lost_is IS NOT NULL
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     bl, rl = (row or (0, 0))
@@ -62,12 +64,13 @@ def test_rank_loss_share(db: Database, account_id: str, campaign_id: str) -> Tes
 
 
 def test_volume_sufficiency(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversions) as conv
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 14
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     conv = (row[0] if row else 0) or 0

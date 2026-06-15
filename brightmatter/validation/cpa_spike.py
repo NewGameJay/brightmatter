@@ -12,16 +12,17 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_recent_volume(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversions) as conv, sum(clicks) as clicks
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 7
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     conv, clicks = (row or (0, 0))
@@ -46,13 +47,14 @@ def test_recent_volume(db: Database, account_id: str, campaign_id: str) -> TestR
 
 
 def test_single_day_outlier(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT date, cost_micros / 1000000.0 as cost, conversions
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 7
         ORDER BY date
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     if not rows:
@@ -76,13 +78,14 @@ def test_single_day_outlier(db: Database, account_id: str, campaign_id: str) -> 
 
 
 def test_bidding_strategy_stability(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT DISTINCT bidding_strategy
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
           AND bidding_strategy IS NOT NULL
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     ev = [{"strategies_seen": [r[0] for r in rows]}]
@@ -100,8 +103,9 @@ def test_bidding_strategy_stability(db: Database, account_id: str, campaign_id: 
 
 
 def test_conversion_value_movement(db: Database, account_id: str, campaign_id: str, data: dict) -> TestResult:
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT
           sum(CASE WHEN date >= current_date - 7 THEN conversion_value ELSE 0 END) as recent_v,
           sum(CASE WHEN date >= current_date - 7 THEN conversions ELSE 0 END) as recent_c,
@@ -109,7 +113,7 @@ def test_conversion_value_movement(db: Database, account_id: str, campaign_id: s
           sum(CASE WHEN date >= current_date - 30 AND date < current_date - 7 THEN conversions ELSE 0 END) as base_c
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ?
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     rv, rc, bv, bc = (row or (0, 0, 0, 0))

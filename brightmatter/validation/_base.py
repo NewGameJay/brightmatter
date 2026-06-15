@@ -7,9 +7,38 @@ the per-detector module can focus on tests, not boilerplate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Literal
 
 Verdict = Literal["confirm", "disconfirm", "inconclusive"]
+
+
+def anchor_date(db) -> str:
+    """Window anchor for harness SQL: MAX(date) from daily_metrics, ISO string.
+
+    Harnesses must test signals against the same window the detectors saw.
+    Using ``current_date`` instead queries past the last ingested row whenever
+    the data lags real-world today (which it routinely does between ingest
+    runs), so every ``date >= current_date - N`` test returns an empty result
+    and collapses to inconclusive/weak. Mirrors
+    ``change_detectors._data_anchor_date``; falls back to today only when the
+    table is empty.
+    """
+    row = db.fetchone("SELECT max(date) FROM daily_metrics")
+    if row and row[0] is not None:
+        return row[0].isoformat()
+    return date.today().isoformat()
+
+
+def windowed(sql: str, anchor: str) -> str:
+    """Rebind ``current_date`` in harness SQL to the data anchor date.
+
+    Substitutes the literal token ``current_date`` with ``DATE 'anchor'`` so
+    every ``date >= current_date - N`` window lands on the ingested data range
+    rather than real-world today. Safe for plain strings, pre-evaluated
+    f-strings, and ``? ``-parameterized queries — it touches only the keyword.
+    """
+    return sql.replace("current_date", f"DATE '{anchor}'")
 
 
 @dataclass

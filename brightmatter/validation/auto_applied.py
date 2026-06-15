@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_outcome_correlation(db: Database, account_id: str) -> TestResult:
     """Did account-level metrics actually degrade after the auto-applied window?"""
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT
           sum(CASE WHEN date >= current_date - 14 THEN cost_micros ELSE 0 END)/1000000.0 as recent_cost,
           sum(CASE WHEN date >= current_date - 14 THEN conversions ELSE 0 END) as recent_conv,
@@ -28,7 +29,7 @@ def test_outcome_correlation(db: Database, account_id: str) -> TestResult:
           sum(CASE WHEN date >= current_date - 28 AND date < current_date - 14 THEN conversions ELSE 0 END) as base_conv
         FROM daily_metrics
         WHERE account_id = ?
-        """,
+        """, anchor),
         [account_id],
     )
     rcost, rconv, bcost, bconv = (row or (0, 0, 0, 0))
@@ -70,14 +71,15 @@ def test_volume_meaningful(account_id: str, data: dict) -> TestResult:
 
 def test_outcome_window_sufficient(db: Database, account_id: str, data: dict) -> TestResult:
     """If most changes happened in the last 7 days, there isn't enough post-data."""
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT change_timestamp
         FROM change_events
         WHERE account_id = ? AND actor = 'auto_applied'
           AND change_timestamp >= current_date - 30
         ORDER BY change_timestamp DESC
-        """,
+        """, anchor),
         [account_id],
     )
     if not rows:

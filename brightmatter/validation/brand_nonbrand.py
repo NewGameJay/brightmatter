@@ -14,7 +14,7 @@ import json
 import re
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult, Verdict
+from brightmatter.validation._base import SignalAudit, TestResult, Verdict, anchor_date, windowed
 
 # Generic stopwords stripped from account names when extracting brand tokens.
 # Anything left over is a candidate brand identifier.
@@ -66,8 +66,9 @@ def brand_token_pct_per_campaign(
         return {}
     n = len(brand_tokens)
     params = [account_id] + [f"%{t}%" for t in brand_tokens] + [account_id, window_days]
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        f"""
+        windowed(f"""
         WITH camp_labels AS (
             SELECT DISTINCT campaign_id, campaign_name
             FROM daily_metrics
@@ -88,7 +89,7 @@ def brand_token_pct_per_campaign(
         FROM camp_labels cl
         LEFT JOIN kw USING (campaign_id)
         WHERE COALESCE(kw.kw_total, 0) >= 3
-        """,
+        """, anchor),
         params,
     )
     return {
@@ -116,8 +117,9 @@ def test_naming_heuristic(
 
     n = len(brand_tokens)
     params = [account_id] + [f"%{t}%" for t in brand_tokens]
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        f"""
+        windowed(f"""
         WITH camp_labels AS (
             SELECT DISTINCT campaign_id, campaign_name,
                    CASE WHEN lower(campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label
@@ -141,7 +143,7 @@ def test_naming_heuristic(
         LEFT JOIN kw USING (campaign_id)
         WHERE COALESCE(kw.kw_total, 0) >= 3
         ORDER BY kw_total DESC
-        """,
+        """, anchor),
         params + [account_id],
     )
 
@@ -197,8 +199,9 @@ def test_match_type_structure(db: Database, account_id: str) -> TestResult:
     non-brand can be broader (discovery). Inverted structure suggests labels
     don't reflect actual intent.
     """
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         WITH camp_labels AS (
             SELECT DISTINCT account_id, campaign_id, campaign_name,
                    CASE WHEN lower(campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label
@@ -210,7 +213,7 @@ def test_match_type_structure(db: Database, account_id: str) -> TestResult:
         FROM camp_labels cl
         JOIN keyword_counts kc USING (account_id, campaign_id)
         WHERE kc.keyword_count >= 3
-        """,
+        """, anchor),
         [account_id],
     )
 
@@ -264,8 +267,9 @@ def test_volume_reliability(db: Database, account_id: str) -> TestResult:
 
     With <10 non-brand conversions, the 'low ROAS' could be statistical noise.
     """
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT
             sum(CASE WHEN lower(campaign_name) LIKE '%brand%' THEN conversions ELSE 0 END) as brand_convs,
             sum(CASE WHEN lower(campaign_name) NOT LIKE '%brand%' THEN conversions ELSE 0 END) as nonbrand_convs,
@@ -273,7 +277,7 @@ def test_volume_reliability(db: Database, account_id: str) -> TestResult:
             sum(CASE WHEN lower(campaign_name) NOT LIKE '%brand%' THEN clicks ELSE 0 END) as nonbrand_clicks
         FROM daily_metrics
         WHERE account_id = ? AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id],
     )
     brand_c, nb_c, brand_cl, nb_cl = (row or (0, 0, 0, 0))
@@ -304,8 +308,9 @@ def test_volume_reliability(db: Database, account_id: str) -> TestResult:
 
 def test_tracking_integrity(db: Database, account_id: str) -> TestResult:
     """T4 — Did conversion tracking change recently? (Vallaeys C7)"""
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT change_timestamp, change_type, resource_type, actor
         FROM change_events
         WHERE account_id = ?
@@ -316,7 +321,7 @@ def test_tracking_integrity(db: Database, account_id: str) -> TestResult:
           )
         ORDER BY change_timestamp DESC
         LIMIT 20
-        """,
+        """, anchor),
         [account_id],
     )
     evidence = [{

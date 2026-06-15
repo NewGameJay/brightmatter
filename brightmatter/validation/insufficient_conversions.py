@@ -13,17 +13,18 @@ from __future__ import annotations
 import json
 
 from brightmatter.storage.database import Database
-from brightmatter.validation._base import SignalAudit, TestResult
+from brightmatter.validation._base import SignalAudit, TestResult, anchor_date, windowed
 
 
 def test_campaign_active(db: Database, account_id: str, campaign_id: str) -> TestResult:
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT status, count(*) as days
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
         GROUP BY status
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     by_status = {r[0]: r[1] for r in rows}
@@ -45,15 +46,16 @@ def test_campaign_active(db: Database, account_id: str, campaign_id: str) -> Tes
 
 def test_strategy_recency(db: Database, account_id: str, campaign_id: str) -> TestResult:
     """If the bidding strategy was changed mid-window, low convs are expected."""
+    anchor = anchor_date(db)
     rows = db.fetchall(
-        """
+        windowed("""
         SELECT DISTINCT bidding_strategy, min(date) as first_seen, max(date) as last_seen
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
           AND bidding_strategy IS NOT NULL
         GROUP BY bidding_strategy
         ORDER BY first_seen
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     ev = [{"strategy_periods": [(s, str(f), str(l)) for s, f, l in rows]}]
@@ -72,12 +74,13 @@ def test_conversion_value_sufficiency(db: Database, account_id: str, campaign_id
     if strategy != "TARGET_ROAS":
         return TestResult("T3", "Conversion-value sufficiency (tROAS)", "inconclusive",
                           f"Strategy is {strategy or 'unknown'}, not TARGET_ROAS — value-based test doesn't apply.")
+    anchor = anchor_date(db)
     row = db.fetchone(
-        """
+        windowed("""
         SELECT sum(conversion_value) as value, sum(conversions) as conv
         FROM daily_metrics
         WHERE account_id = ? AND campaign_id = ? AND date >= current_date - 30
-        """,
+        """, anchor),
         [account_id, campaign_id],
     )
     val, conv = (row or (0, 0))
