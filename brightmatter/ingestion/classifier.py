@@ -145,6 +145,27 @@ _NAME_RULES: list[tuple[str, BusinessType, str, float]] = [
     # Sporting goods / outdoor
     (r"\b(rugby|hockey|football|baseball|basketball|outdoor gear|camping|fishing)\b",
                                         BusinessType.ECOMMERCE,  "sporting_goods",         0.7),
+    # Tactical / firearm accessories / sports retail (sporting goods).
+    # NOTE: "golf" is intentionally NOT a name keyword — it's ambiguous between
+    # golf retailers (ecommerce) and golf-course/club operators (hospitality).
+    # Golf RETAILERS are caught precisely by the "golf" URL substring instead.
+    (r"\b(holster|tactical|firearm|concealed carry|sports)\b",
+                                        BusinessType.ECOMMERCE,  "sporting_goods",         0.7),
+    # Fitness (gyms, methods, events)
+    (r"\b(gym|fitness|crossfit|pilates|yoga|workout|spartan race)\b",
+                                        BusinessType.ECOMMERCE,  "fitness",                0.6),
+    # Fragrance / hair color (beauty — extends the beauty rule)
+    (r"\b(fragrance|perfume|cologne|parfum|hair color|haircolor)\b",
+                                        BusinessType.ECOMMERCE,  "beauty",                 0.7),
+    # Apparel — knitwear / activewear / swimwear
+    (r"\b(knit|knitwear|wool|sweater|activewear|swimwear|swimsuit)\b",
+                                        BusinessType.ECOMMERCE,  "apparel",                0.7),
+    # Food / beverage — matcha, olive oil, prepared meals
+    (r"\b(matcha|olive oil|meal kit|meals to go|granola)\b",
+                                        BusinessType.ECOMMERCE,  "food_beverage",          0.6),
+    # Pets — cats/dogs as standalone words (run-together handled via URL rules)
+    (r"\b(cat|cats|dog|dogs|feline|canine)\b",
+                                        BusinessType.ECOMMERCE,  "pets",                   0.6),
     # SaaS / software
     (r"\b(saas|software|platform|analytics|crm|api|ai[- ]?platform|developer tools)\b",
                                         BusinessType.SAAS,       "software",               0.6),
@@ -222,6 +243,19 @@ _URL_SUBSTRINGS: list[tuple[str, BusinessType, str, float]] = [
     ("learning",     BusinessType.LEAD_GEN,   "education",                 0.4),
     ("recovery",     BusinessType.LOCAL,      "healthcare",                0.6),
     ("rehab",        BusinessType.LOCAL,      "healthcare",                0.7),
+    # Run-together brand domains the word-boundary name rules can't catch
+    ("golf",         BusinessType.ECOMMERCE,  "sporting_goods",            0.6),
+    ("holster",      BusinessType.ECOMMERCE,  "sporting_goods",            0.6),
+    ("fragrance",    BusinessType.ECOMMERCE,  "beauty",                    0.6),
+    ("fragflex",     BusinessType.ECOMMERCE,  "beauty",                    0.6),
+    ("haircolor",    BusinessType.ECOMMERCE,  "beauty",                    0.6),
+    ("matcha",       BusinessType.ECOMMERCE,  "food_beverage",             0.6),
+    ("gymtonic",     BusinessType.ECOMMERCE,  "fitness",                   0.6),
+    ("meltmethod",   BusinessType.ECOMMERCE,  "fitness",                   0.6),
+    ("petpad",       BusinessType.ECOMMERCE,  "pets",                      0.6),
+    ("kneadcat",     BusinessType.ECOMMERCE,  "pets",                      0.6),
+    ("wool",         BusinessType.ECOMMERCE,  "apparel",                   0.5),
+    ("knit",         BusinessType.ECOMMERCE,  "apparel",                   0.5),
 ]
 
 
