@@ -15,6 +15,7 @@ SELECT
   campaign.advertising_channel_type,
   campaign.bidding_strategy_type,
   campaign.campaign_budget,
+  campaign_budget.amount_micros,
   metrics.impressions,
   metrics.clicks,
   metrics.cost_micros,

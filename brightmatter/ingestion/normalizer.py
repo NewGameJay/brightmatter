@@ -73,7 +73,7 @@ def normalize_daily_metrics(row: Any, account_id: str) -> DailyMetrics:
         search_rank_lost_is=metrics.search_rank_lost_impression_share if metrics.search_rank_lost_impression_share else None,
         search_abs_top_is=metrics.search_absolute_top_impression_share if metrics.search_absolute_top_impression_share else None,
         bidding_strategy=_BIDDING_MAP.get(bidding, BiddingStrategy.UNKNOWN).value,
-        daily_budget_micros=0,
+        daily_budget_micros=int(getattr(getattr(row, "campaign_budget", None), "amount_micros", 0) or 0),
         status=_safe_name(campaign.status),
     )
 
