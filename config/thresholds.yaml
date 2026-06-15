@@ -942,3 +942,55 @@ detectors:
           Grant accounts can't run PMax under Google Ad Grants policy.
         source: Google Ad Grants policy
         revisit: never (this should remain a skip)
+
+  search_terms_waste:
+    description: >
+      A material share of a campaign's spend went to search terms that never
+      converted over the window. The #1 audit finding across published
+      checklists. DATA DEPENDENCY: the search_terms table (ingest
+      --search-terms). SCAFFOLDED 2026-06 — code-complete but UNVALIDATED
+      against real search-term data; produces no signals until ingested.
+      Harness disconfirms when the "wasted" terms had too few clicks to judge
+      (noise) or the waste share is immaterial; the assisted-conversion blind
+      spot of last-click data is surfaced as an explicit caveat.
+    defaults:
+      window_days: 30
+      min_term_cost_micros: 50000000      # $50 — a single term must spend this to count
+      min_term_impressions: 100           # enough exposure that 0 conv is meaningful
+      min_total_waste_micros: 100000000   # $100 — absolute floor on flagged waste
+      waste_share_min: 0.15               # >=15% of campaign spend on zero-conv terms
+    sources:
+      - threshold: min_term_cost_micros
+        value: 50000000
+        rationale: >
+          A term needs ~$50 of spend before "zero conversions" is a confident
+          waste signal rather than an unlucky cheap term. Provisional pending
+          validation on real search-term data.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: min_term_impressions
+        value: 100
+        rationale: >
+          Separates real non-converting traffic from low-impression noise —
+          mirrors the harness's statistical-noise check.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: waste_share_min
+        value: 0.15
+        rationale: >
+          A few stray non-converting terms are normal; >=15% of campaign spend
+          on confirmed zero-converters is a systemic leak worth surfacing.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+      - threshold: min_total_waste_micros
+        value: 100000000
+        rationale: >
+          Absolute floor so the percentage gate doesn't fire on tiny campaigns
+          where 15% is only a few dollars.
+        source: implementation default (UNVALIDATED scaffold)
+        confidence: prior
+        revisit: calibrate against the first ingested search_term_view data
+    overrides: []

@@ -57,6 +57,7 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_cross_account_outlier(db))
     signals.extend(detect_pmax_low_conversion_volume(db))
     signals.extend(detect_pmax_conversion_inflation(db))
+    signals.extend(detect_search_terms_waste(db))
 
     # Phase 2 change-detectors: rolling-period comparisons that pair with
     # the Phase 1 state-detectors above. Both kinds of signals can fire
@@ -1235,6 +1236,71 @@ def detect_pmax_conversion_inflation(db: Database) -> list[Signal]:
                   "pmax_conv": pconv, "search_conv": sconv,
                   "pmax_value_per_conv": (pval / pconv) if pconv else None,
                   "search_value_per_conv": (sval / sconv) if sconv else None},
+            detected_at=_now(),
+        ))
+    return signals
+
+
+# ── Detector: Search Terms Waste ──
+# Research: the #1 audit finding across every published checklist — spend on
+# search terms that never convert. DATA DEPENDENCY: the `search_terms` table,
+# populated by `ingest --search-terms` (search_term_view GAQL). Until that is
+# ingested the table is empty and this detector produces no signals. SCAFFOLDED
+# 2026-06: detector + harness are code-complete but UNVALIDATED against real
+# search-term data — validate after the first search_term_view ingest.
+
+def detect_search_terms_waste(db: Database) -> list[Signal]:
+    """Flag campaigns where a material share of spend went to zero-conversion terms.
+
+    Thresholds: config/thresholds.yaml → search_terms_waste.
+    """
+    th = effective_thresholds("search_terms_waste")
+    min_term_cost = int(th['min_term_cost_micros'])
+    min_term_impr = int(th['min_term_impressions'])
+    min_total_waste = int(th['min_total_waste_micros'])
+    waste_share_min = float(th['waste_share_min'])
+    # A term counts as "wasted" when it has real exposure (>= min impressions),
+    # meaningful spend (>= min cost), and zero conversions over the window.
+    waste_pred = (f"st.conversions = 0 AND st.cost_micros >= {min_term_cost} "
+                  f"AND st.impressions >= {min_term_impr}")
+    try:
+        rows = db.fetchall(f"""
+            WITH latest AS (SELECT max(window_end) as w FROM search_terms),
+            camp AS (
+                SELECT st.account_id, st.campaign_id, st.campaign_name,
+                       sum(st.cost_micros) as total_cost,
+                       sum(CASE WHEN {waste_pred} THEN st.cost_micros ELSE 0 END) as waste_cost,
+                       sum(CASE WHEN {waste_pred} THEN st.clicks ELSE 0 END) as waste_clicks,
+                       count(CASE WHEN {waste_pred} THEN 1 END) as waste_terms
+                FROM search_terms st, latest
+                WHERE st.window_end = latest.w
+                GROUP BY st.account_id, st.campaign_id, st.campaign_name
+            )
+            SELECT account_id, campaign_id, campaign_name,
+                   total_cost, waste_cost, waste_clicks, waste_terms
+            FROM camp
+            WHERE waste_cost >= {min_total_waste}
+              AND waste_cost >= {waste_share_min} * NULLIF(total_cost, 0)
+            ORDER BY waste_cost DESC
+        """)
+    except Exception:
+        # search_terms not yet ingested / table absent — no signals.
+        return []
+    signals = []
+    for r in rows:
+        acct, cid, cname, total_cost, waste_cost, waste_clicks, waste_terms = r
+        share = (waste_cost / total_cost) if total_cost else 0.0
+        signals.append(Signal(
+            signal_id=_id(), account_id=acct, campaign_id=cid,
+            domain=PatternDomain.NON_BRANDED_SEARCH,
+            signal_type="search_terms_waste", severity=Severity.WARNING,
+            value=waste_cost / 1_000_000, threshold=min_total_waste / 1_000_000,
+            message=(f"Campaign '{cname}': ${waste_cost / 1e6:,.0f} ({share:.0%} of spend) on "
+                     f"{waste_terms} zero-conversion search terms ({waste_clicks:.0f} clicks) — "
+                     f"review and add negatives"),
+            data={"campaign_id": cid, "total_cost": total_cost / 1e6,
+                  "waste_cost": waste_cost / 1e6, "waste_share": share,
+                  "waste_terms": waste_terms, "waste_clicks": waste_clicks},
             detected_at=_now(),
         ))
     return signals

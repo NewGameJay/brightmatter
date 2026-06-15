@@ -85,6 +85,11 @@ def cmd_ingest(args):
             ch = pipeline.ingest_changes(days=min(args.days, 90))
         console.print(f"  Change events: {sum(ch.values())} events")
 
+    if args.search_terms:
+        with console.status("Pulling search terms..."):
+            st = pipeline.ingest_search_terms(days=min(args.days, 30))
+        console.print(f"  Search-term rows: {sum(st.values())} terms")
+
     console.print("\n[green]Ingestion complete.[/green]")
     db.close()
 
@@ -442,6 +447,7 @@ def main():
     p_ingest.add_argument("--days", type=int, default=30)
     p_ingest.add_argument("--keywords", action="store_true", help="Also pull keyword QS data")
     p_ingest.add_argument("--changes", action="store_true", help="Also pull change history")
+    p_ingest.add_argument("--search-terms", action="store_true", help="Also pull search-term performance")
 
     p_analyze = sub.add_parser("analyze", help="Run analysis pipeline")
     p_analyze.add_argument("--detectors-only", action="store_true")

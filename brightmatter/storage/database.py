@@ -166,6 +166,22 @@ CREATE TABLE IF NOT EXISTS conversion_actions (
     PRIMARY KEY (account_id, action_id)
 );
 
+CREATE TABLE IF NOT EXISTS search_terms (
+    account_id     TEXT NOT NULL,
+    campaign_id    TEXT NOT NULL,
+    campaign_name  TEXT,
+    search_term    TEXT NOT NULL,
+    window_start   DATE NOT NULL,
+    window_end     DATE NOT NULL,
+    impressions    BIGINT DEFAULT 0,
+    clicks         BIGINT DEFAULT 0,
+    cost_micros    BIGINT DEFAULT 0,
+    conversions    DOUBLE DEFAULT 0,
+    conversions_value DOUBLE DEFAULT 0,
+    ingested_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, search_term, window_start)
+);
+
 CREATE TABLE IF NOT EXISTS account_web_meta (
     account_id   TEXT PRIMARY KEY,
     title        TEXT,
