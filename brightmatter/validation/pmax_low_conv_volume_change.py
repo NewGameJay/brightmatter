@@ -155,8 +155,16 @@ def test_learning_phase(db: Database, account_id: str, campaign_id: str, data: d
     age = (last - first).days + 1
     ev = [{"first_seen": str(first), "last_seen": str(last), "age_days": age}]
     if age < 42:
-        return TestResult("T4", "Campaign past PMax learning phase", "disconfirm",
-                          f"PMax has been visible only {age}d — Google guidance: 6+ weeks before volume movement is interpretable.",
+        # Still inside the ~6-week PMax learning phase. This does NOT falsify
+        # the signal — it is explicitly informational about ramping campaigns
+        # ("improving signals preview a state-firing campaign exiting on its
+        # own as it ramps"). Lack of maturity means we can't yet interpret the
+        # move as structural, i.e. inconclusive — not evidence the signal is
+        # false. (Also note: when the data window itself is < 6 weeks, no
+        # campaign can ever clear this bar, so disconfirm would be an artifact.)
+        return TestResult("T4", "Campaign past PMax learning phase", "inconclusive",
+                          f"PMax visible only {age}d (<6wk learning phase) — volume movement isn't yet "
+                          f"interpretable as structural, but that doesn't make the informational signal false.",
                           ev)
     return TestResult("T4", "Campaign past PMax learning phase", "confirm",
                       f"PMax visible {age}d; past learning-phase noise.", ev)

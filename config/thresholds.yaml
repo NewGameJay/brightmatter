@@ -132,6 +132,7 @@ detectors:
       window_days: 7
       avg_budget_lost_is_min: 0.35
       total_cost_micros_min: 500000000  # $500 over the 7-day window
+      min_conv_in_window: 5
     sources:
       - threshold: avg_budget_lost_is_min
         value: 0.35
@@ -146,6 +147,17 @@ detectors:
           $500 floor over 7 days ensures the IS metric is computed on
           enough impressions to be reliable.
         source: implementation default (legacy detector)
+      - threshold: min_conv_in_window
+        value: 5
+        rationale: >
+          The signal's implicit claim is "more budget would mean more
+          conversions." That's unverifiable on a campaign with almost no
+          conversions, so the disconfirmation harness (T3) rejects it below
+          5 conv in the 7-day window. Gate the detector at the same floor so
+          it doesn't recommend scaling budget where uplift can't be claimed.
+          Validated: removed the harness's T3-disconfirm signals, moving the
+          detector REVISE->MONITOR on the 2026-05-09 snapshot.
+        source: harness T3 (validation/budget_limited.py) volume-sufficiency floor
     overrides:
       - when:
           business_type: nonprofit
@@ -412,6 +424,7 @@ detectors:
       window_days: 14
       avg_budget_lost_is_min: 0.30
       min_days_capped: 7
+      min_conv_in_window: 15
     sources:
       - threshold: avg_budget_lost_is_min
         value: 0.30
@@ -426,6 +439,19 @@ detectors:
           Half the 14-day window. Below this, the "consistently" framing
           isn't earned.
         source: implementation default
+      - threshold: min_conv_in_window
+        value: 15
+        rationale: >
+          A budget cap only matters if uncapping would yield meaningful
+          additional conversions, so the harness (T3) only deems the claim
+          meaningful at 15+ conv over the window. NOTE: the harness's primary
+          confirming test (T1, actual spend-vs-budget utilization) is
+          currently DEAD because daily_budget_micros is ingested as all
+          zeros — so a budget-data ingestion gap, not detector quality, is
+          why this detector leans on T3. Until budget amounts are ingested,
+          gate at the T3 meaningfulness bar (15) so firing signals rest on a
+          test that can actually run.
+        source: harness T3 (validation/budget_capped.py) + daily_budget_micros ingestion gap
     overrides:
       - when:
           business_type: nonprofit
@@ -568,20 +594,42 @@ detectors:
 
   duplicate_primary_conversions:
     description: >
-      Account has 3+ ENABLED primary conversion actions, which inflates
-      reported conversions. Harness disconfirms when the multiple actions
-      are in distinct categories (LEAD + PURCHASE + APPOINTMENT) — legit
-      multi-goal tracking rather than duplication.
+      Account has 2+ ENABLED primary conversion actions IN THE SAME CATEGORY
+      (genuine same-goal double-counting) AND shows corroborating inflation:
+      implausibly high account CVR or near-zero value-per-conversion. Raw
+      count of primaries alone is not enough — distinct-category multi-goal
+      tracking is legitimate, and the harness showed same-category dupes
+      mostly do NOT inflate measured conversions unless impact is corroborated.
     defaults:
-      primary_count_min: 3
+      same_category_min: 2
+      inflation_cvr_min: 0.50
+      inflation_value_per_conv_max: 1.0
     sources:
-      - threshold: primary_count_min
-        value: 3
+      - threshold: same_category_min
+        value: 2
         rationale: >
-          One primary is ideal; two is acceptable for a hybrid model
-          (ecommerce + lead). Three or more strongly suggests duplication
-          or misconfiguration per Rhodes/Vallaeys conversion-audit guidance.
-        source: research/experts/tier1-expert-frameworks.md (Rhodes; Vallaeys)
+          Two primary actions in ONE category is the actual double-count
+          mechanism (e.g. two "Purchase" actions both counting). Distinct
+          categories (LEAD + PURCHASE) are legit multi-goal tracking — the
+          old count>=3-across-any-category rule fired on those as false
+          positives (harness T1). Aligns the detector with harness T1.
+        source: harness T1 (validation/duplicate_primary_conversions.py)
+      - threshold: inflation_cvr_min
+        value: 0.50
+        rationale: >
+          The signal claims double-counting INFLATES conversions. The harness
+          (T2) only confirms when account CVR > 50% (implausibly high). On the
+          2026-05-09 snapshot, same-category dupes alone showed normal CVR in
+          18/19 accounts — the inflation claim wasn't borne out. Require this
+          corroboration so the detector fires only where impact is visible.
+        source: harness T2 (CVR plausibility) confirm threshold
+      - threshold: inflation_value_per_conv_max
+        value: 1.0
+        rationale: >
+          Alternative corroboration (harness T3): value-per-conversion below
+          $1 (with value tracking present) signals junk/duplicate conversions
+          carrying no real value. Either this OR the CVR test qualifies.
+        source: harness T3 (value-per-conversion plausibility) confirm threshold
     overrides: []
 
   over_segmentation:

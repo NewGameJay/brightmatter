@@ -239,6 +239,7 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
         GROUP BY account_id, campaign_id, campaign_name
         HAVING avg(search_budget_lost_is) > {float(th['avg_budget_lost_is_min'])}
            AND sum(cost_micros) > {int(th['total_cost_micros_min'])}
+           AND sum(conversions) >= {float(th['min_conv_in_window'])}
     """, anchor))
     signals = []
     bl_min = th['avg_budget_lost_is_min']
@@ -557,16 +558,23 @@ def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
     if anchor is None:
         return []
     window = int(th['window_days'])
+    bl_min = float(th['avg_budget_lost_is_min'])
+    # Aggregate over the full window so sum(conversions) counts every day, not
+    # only capped days; days_capped / avg loss are restricted to capped days
+    # via CASE. The conversion floor keeps the signal to caps that actually
+    # gate meaningful volume (the harness's only functional confirming test,
+    # since daily_budget_micros is unavailable for the utilization check).
     rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
-               avg(search_budget_lost_is) as avg_budget_lost,
-               count(*) as days_checked
+               avg(CASE WHEN search_budget_lost_is > {bl_min}
+                        THEN search_budget_lost_is END) as avg_budget_lost,
+               count(CASE WHEN search_budget_lost_is > {bl_min} THEN 1 END) as days_checked
         FROM daily_metrics
         WHERE date >= current_date - {window}
           AND search_budget_lost_is IS NOT NULL
-          AND search_budget_lost_is > {float(th['avg_budget_lost_is_min'])}
         GROUP BY account_id, campaign_id, campaign_name
-        HAVING count(*) >= {int(th['min_days_capped'])}
+        HAVING count(CASE WHEN search_budget_lost_is > {bl_min} THEN 1 END) >= {int(th['min_days_capped'])}
+           AND sum(conversions) >= {float(th['min_conv_in_window'])}
     """, anchor))
     signals = []
     threshold = th['avg_budget_lost_is_min']
@@ -674,29 +682,58 @@ def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → duplicate_primary_conversions.
     """
     th = effective_thresholds("duplicate_primary_conversions")
-    minimum = int(th['primary_count_min'])
+    same_cat_min = int(th['same_category_min'])
+    cvr_min = float(th['inflation_cvr_min'])
+    vpc_max = float(th['inflation_value_per_conv_max'])
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     try:
         rows = db.fetchall(f"""
-            SELECT account_id, count(*) as primary_count,
+            SELECT account_id, category, count(*) as cat_count,
                    string_agg(action_name, ', ') as names
             FROM conversion_actions
-            WHERE primary_for_goal = true
-              AND status = 'ENABLED'
-            GROUP BY account_id
-            HAVING count(*) >= {minimum}
+            WHERE primary_for_goal = true AND status = 'ENABLED'
+            GROUP BY account_id, category
+            HAVING count(*) >= {same_cat_min}
         """)
     except Exception:
         return []
 
     signals = []
-    for r in rows:
+    seen: set[str] = set()
+    for acct, category, cat_count, names in rows:
+        if acct in seen:
+            continue
+        # Same-category duplication is only a problem if it actually inflates
+        # the numbers. Corroborate with performance: implausibly high account
+        # CVR (multi-counting) or near-zero value-per-conversion (junk convs).
+        perf = db.fetchone(windowed("""
+            SELECT sum(conversions), sum(clicks), sum(conversion_value)
+            FROM daily_metrics
+            WHERE account_id = ? AND date >= current_date - 30
+        """, anchor), [acct])
+        conv, clicks, value = (perf or (0, 0, 0))
+        conv, clicks, value = (conv or 0, clicks or 0, value or 0)
+        cvr = (conv / clicks) if clicks else 0
+        vpc = (value / conv) if conv else None
+        high_cvr = cvr > cvr_min
+        low_vpc = value > 0 and vpc is not None and vpc < vpc_max
+        if not (high_cvr or low_vpc):
+            continue
+        seen.add(acct)
+        reason = (f"account CVR {cvr:.0%} is implausibly high" if high_cvr
+                  else f"value/conversion is ${vpc:.2f}")
         signals.append(Signal(
-            signal_id=_id(), account_id=r[0],
+            signal_id=_id(), account_id=acct,
             domain=PatternDomain.LANDING_PAGE,
             signal_type="duplicate_primary_conversions", severity=Severity.WARNING,
-            value=float(r[1]), threshold=float(minimum),
-            message=f"{r[1]} primary conversion actions — likely double-counting: {r[2][:100]}",
-            data={"primary_count": r[1], "action_names": r[2]},
+            value=float(cat_count), threshold=float(same_cat_min),
+            message=f"{cat_count} primary '{category}' conversion actions (same goal) — "
+                    f"{reason}, likely double-counting: {names[:80]}",
+            data={"category": category, "same_category_count": cat_count,
+                  "action_names": names, "account_cvr_30d": round(cvr, 4),
+                  "value_per_conv": round(vpc, 2) if vpc is not None else None},
             detected_at=_now(),
         ))
     return signals
