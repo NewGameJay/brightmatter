@@ -15,6 +15,9 @@ from brightmatter.validation.budget_limited_is_change import (
     audit_budget_limited_is_change_signals,
 )
 from brightmatter.validation.cpa_change import audit_cpa_change_signals
+from brightmatter.validation.cross_account_outlier import (
+    audit_cross_account_outlier_signals,
+)
 from brightmatter.validation.cpa_spike import audit_cpa_spike_signals
 from brightmatter.validation.cvr_change import audit_cvr_change_signals
 from brightmatter.validation.cvr_drop import audit_cvr_drop_signals
@@ -55,6 +58,7 @@ AUDITS = {
     "pmax_low_conv_volume_change":  audit_pmax_low_conv_volume_change_signals,
     "pmax_conversion_inflation":    audit_pmax_conversion_inflation_signals,
     "search_terms_waste":           audit_search_terms_waste_signals,
+    "cross_account_outlier":        audit_cross_account_outlier_signals,
 }
 
 __all__ = ["AUDITS"]

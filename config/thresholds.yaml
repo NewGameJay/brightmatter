@@ -998,3 +998,44 @@ detectors:
         confidence: prior
         revisit: calibrate against the first ingested search_term_view data
     overrides: []
+
+  cross_account_cpa_outlier:
+    description: >
+      Account CPA is >2 std dev above its SEGMENT peers (not the global mean).
+      Compares within the tightest peer group that has enough members
+      (vertical+tier -> vertical -> spend_tier -> global), so a high-CPA legal
+      account isn't judged against low-CPA apparel. Harness disconfirms when the
+      comparison fell back to a mixed-vertical group, the high CPA is justified
+      by high conversion value (high-ticket), or the account is too new/low to judge.
+    defaults:
+      window_days: 30
+      min_conversions: 50
+      min_cost_micros: 5000000000   # $5,000 over the window
+      z_threshold: 2.0
+      min_peers: 5
+    sources:
+      - threshold: z_threshold
+        value: 2.0
+        rationale: >
+          ~2 std dev above the peer mean is the conventional outlier line
+          (~2.5% of a normal group sits beyond it). Same threshold as the prior
+          global comparison, now applied within segments.
+        source: implementation default (statistical convention)
+      - threshold: min_peers
+        value: 5
+        rationale: >
+          A segment needs >= 5 accounts for its mean/std to be meaningful; below
+          that, fall back to a broader segment rather than compare against 1-2
+          peers. With 118 qualifying accounts, spend-tier groups (13-67) always
+          clear this; only the largest verticals (apparel, collectibles,
+          pool_spa) do on their own — hence the fallback chain.
+        source: implementation default + 2026-06-15 peer-group sizing
+      - threshold: min_conversions
+        value: 50
+        rationale: CPA needs enough conversions to be stable; below ~50/window it's noise-dominated.
+        source: implementation default (legacy detector)
+      - threshold: min_cost_micros
+        value: 5000000000
+        rationale: $5k/window floor so the account is materially spending.
+        source: implementation default (legacy detector)
+    overrides: []

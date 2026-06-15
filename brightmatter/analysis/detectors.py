@@ -1082,44 +1082,87 @@ def detect_missing_extensions(db: Database) -> list[Signal]:
 # Research: accounts whose CPA is >2 std dev from the peer group mean
 
 def detect_cross_account_outlier(db: Database) -> list[Signal]:
-    """Flag accounts whose CPA is significantly worse than the peer group."""
+    """Flag accounts whose CPA is far above their SEGMENT peers' CPA.
+
+    Compares each account against the tightest peer group with enough members
+    (vertical+tier -> vertical -> spend_tier -> global), so a high-CPA legal
+    account isn't judged against low-CPA apparel. Thresholds:
+    config/thresholds.yaml -> cross_account_cpa_outlier.
+    """
+    import statistics
+
+    th = effective_thresholds("cross_account_cpa_outlier")
     anchor = _data_anchor_date(db)
     if anchor is None:
         return []
-    rows = db.fetchall(windowed("""
-        WITH account_perf AS (
+    window = int(th["window_days"])
+    min_conv = float(th["min_conversions"])
+    min_cost = int(th["min_cost_micros"])
+    z_thr = float(th["z_threshold"])
+    min_peers = int(th["min_peers"])
+
+    rows = db.fetchall(windowed(f"""
+        SELECT ap.account_id, ap.cpa, ap.cost, ap.conv,
+               COALESCE(a.vertical, '') as vertical,
+               COALESCE(a.spend_tier, '') as spend_tier
+        FROM (
             SELECT account_id,
                    sum(cost_micros) / 1000000.0 as cost,
                    sum(conversions) as conv,
-                   sum(cost_micros) / NULLIF(sum(conversions), 0) / 1000000.0 as cpa,
-                   sum(clicks) as clicks,
-                   sum(impressions) as impressions
+                   sum(cost_micros) / NULLIF(sum(conversions), 0) / 1000000.0 as cpa
             FROM daily_metrics
-            WHERE date >= current_date - 30
+            WHERE date >= current_date - {window}
             GROUP BY account_id
-            HAVING sum(conversions) > 50 AND sum(cost_micros) > 5000000000
-        ),
-        stats AS (
-            SELECT avg(cpa) as mean_cpa, stddev(cpa) as std_cpa
-            FROM account_perf
-            WHERE cpa IS NOT NULL AND cpa > 0
-        )
-        SELECT ap.account_id, ap.cpa, ap.cost, ap.conv, s.mean_cpa, s.std_cpa
-        FROM account_perf ap, stats s
-        WHERE ap.cpa > s.mean_cpa + 2 * s.std_cpa
-          AND s.std_cpa > 0
+            HAVING sum(conversions) > {min_conv} AND sum(cost_micros) > {min_cost}
+        ) ap
+        LEFT JOIN accounts a ON a.account_id = ap.account_id
+        WHERE ap.cpa IS NOT NULL AND ap.cpa > 0
     """, anchor))
+
+    perf = [{"account_id": r[0], "cpa": r[1], "cost": r[2], "conv": r[3],
+             "vertical": r[4], "spend_tier": r[5]} for r in rows]
+
+    # Fallback chain: use the most specific segment that has >= min_peers.
+    # Empty vertical/tier strings are falsy, so those accounts skip that level.
+    levels = [
+        ("vertical+tier", lambda q, p: bool(p["vertical"]) and bool(p["spend_tier"])
+            and q["vertical"] == p["vertical"] and q["spend_tier"] == p["spend_tier"]),
+        ("vertical", lambda q, p: bool(p["vertical"]) and q["vertical"] == p["vertical"]),
+        ("spend_tier", lambda q, p: bool(p["spend_tier"]) and q["spend_tier"] == p["spend_tier"]),
+        ("global", lambda q, p: True),
+    ]
+
     signals = []
-    for r in rows:
-        acct, cpa, cost, conv, mean_cpa, std_cpa = r
-        z_score = (cpa - mean_cpa) / std_cpa if std_cpa else 0
+    for p in perf:
+        segment, peers = "global", [q["cpa"] for q in perf]
+        for name, pred in levels:
+            grp = [q["cpa"] for q in perf if pred(q, p)]
+            if len(grp) >= min_peers:
+                segment, peers = name, grp
+                break
+        if len(peers) < 2:
+            continue
+        mean = statistics.mean(peers)
+        std = statistics.pstdev(peers)
+        if std <= 0:
+            continue
+        z = (p["cpa"] - mean) / std
+        if z <= z_thr:
+            continue
+        seg_label = (f"{p['vertical']}/{p['spend_tier']}" if segment == "vertical+tier"
+                     else p["vertical"] if segment == "vertical"
+                     else p["spend_tier"] if segment == "spend_tier"
+                     else "all accounts")
         signals.append(Signal(
-            signal_id=_id(), account_id=acct,
+            signal_id=_id(), account_id=p["account_id"],
             domain=PatternDomain.BIDDING_STRATEGY,
             signal_type="cross_account_cpa_outlier", severity=Severity.WARNING,
-            value=cpa, threshold=mean_cpa + 2 * std_cpa,
-            message=f"CPA ${cpa:,.2f} is {z_score:.1f} std dev above peer group mean of ${mean_cpa:,.2f} (${cost:,.0f} spend, {conv:.0f} conv)",
-            data={"cpa": cpa, "mean_cpa": mean_cpa, "std_cpa": std_cpa, "z_score": z_score},
+            value=p["cpa"], threshold=mean + z_thr * std,
+            message=(f"CPA ${p['cpa']:,.2f} is {z:.1f}σ above the {seg_label} peer mean "
+                     f"${mean:,.2f} (n={len(peers)} {segment} peers, {p['conv']:.0f} conv)"),
+            data={"cpa": p["cpa"], "segment": segment, "segment_label": seg_label,
+                  "peer_n": len(peers), "mean_cpa": mean, "std_cpa": std, "z_score": z,
+                  "vertical": p["vertical"], "spend_tier": p["spend_tier"]},
             detected_at=_now(),
         ))
     return signals
