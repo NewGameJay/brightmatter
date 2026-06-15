@@ -147,6 +147,11 @@ _PROFILES: dict[str, tuple[str, str, str]] = {
         "Different conversion types, geographic markets, product price points, or account maturity vs peers.",
         "Compare conversion-action types and geo targeting to peers, and weigh conversion value, not just CPA.",
     ),
+    "vertical_cpa_benchmark": (
+        LIKELY,
+        "Published benchmarks are coarse market averages — business model within the vertical (lead-gen vs ecommerce), geo, price point, and conversion type all move CPA independently of efficiency.",
+        "Compare the account's conversion types and price point to the vertical norm, and weigh conversion value (ROAS), not just CPA, before concluding it's overpaying.",
+    ),
     "pmax_conversion_inflation": (
         LIKELY,
         "Whether PMax's higher CVR reflects genuine shopping/retargeting intent rather than counting different conversion actions.",

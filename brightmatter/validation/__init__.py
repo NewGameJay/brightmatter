@@ -36,6 +36,9 @@ from brightmatter.validation.pmax_low_conv_volume_change import (
 )
 from brightmatter.validation.pmax_low_volume import audit_pmax_low_volume_signals
 from brightmatter.validation.search_terms_waste import audit_search_terms_waste_signals
+from brightmatter.validation.vertical_cpa_benchmark import (
+    audit_vertical_cpa_benchmark_signals,
+)
 
 # Map detector key → audit function. Each function returns a list of audit
 # objects with a uniform interface: .signal_id, .account_id, .account_name,
@@ -59,6 +62,7 @@ AUDITS = {
     "pmax_conversion_inflation":    audit_pmax_conversion_inflation_signals,
     "search_terms_waste":           audit_search_terms_waste_signals,
     "cross_account_outlier":        audit_cross_account_outlier_signals,
+    "vertical_cpa_benchmark":       audit_vertical_cpa_benchmark_signals,
 }
 
 __all__ = ["AUDITS"]

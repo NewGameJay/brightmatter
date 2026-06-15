@@ -17,6 +17,7 @@ from brightmatter.analysis.change_detectors import (
 )
 from brightmatter.analysis.confidence import annotate as annotate_confidence
 from brightmatter.analysis.naming import split_fractions
+from brightmatter import benchmarks as _bench
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
 from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
@@ -59,6 +60,7 @@ def run_all_detectors(db: Database) -> list[Signal]:
     signals.extend(detect_pmax_low_conversion_volume(db))
     signals.extend(detect_pmax_conversion_inflation(db))
     signals.extend(detect_search_terms_waste(db))
+    signals.extend(detect_vertical_cpa_benchmark(db))
 
     # Phase 2 change-detectors: rolling-period comparisons that pair with
     # the Phase 1 state-detectors above. Both kinds of signals can fire
@@ -1362,6 +1364,67 @@ def detect_search_terms_waste(db: Database) -> list[Signal]:
             data={"campaign_id": cid, "total_cost": total_cost / 1e6,
                   "waste_cost": waste_cost / 1e6, "waste_share": share,
                   "waste_terms": waste_terms, "waste_clicks": waste_clicks},
+            detected_at=_now(),
+        ))
+    return signals
+
+
+# ── Detector: Vertical CPA Benchmark (external) ──
+# Research: WordStream CPC/CVR by industry (config/vertical_benchmarks.yaml).
+# Absolute-market complement to cross_account_outlier (peer-relative): flags
+# accounts whose CPA is egregiously above the published benchmark for their
+# vertical, seasonally adjusted. Coarse by construction — only fires on >3x.
+
+def detect_vertical_cpa_benchmark(db: Database) -> list[Signal]:
+    """Flag accounts whose CPA is far above their vertical's market benchmark.
+
+    Benchmarks + params: config/vertical_benchmarks.yaml.
+    """
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    p = _bench.detector_params()
+    window = int(p.get("window_days", 30))
+    min_conv = float(p.get("min_conversions", 30))
+    min_cost = int(p.get("min_cost_micros", 3000000000))
+    high_mult = float(p.get("high_multiple", 3.0))
+    quarter = (int(anchor[5:7]) - 1) // 3 + 1
+    season = _bench.seasonal_multiplier(quarter)
+
+    rows = db.fetchall(windowed(f"""
+        SELECT ap.account_id, ap.cpa, ap.conv, COALESCE(a.vertical, '') as vertical
+        FROM (
+            SELECT account_id,
+                   sum(cost_micros) / NULLIF(sum(conversions), 0) / 1000000.0 as cpa,
+                   sum(conversions) as conv
+            FROM daily_metrics
+            WHERE date >= current_date - {window}
+            GROUP BY account_id
+            HAVING sum(conversions) > {min_conv} AND sum(cost_micros) > {min_cost}
+        ) ap
+        LEFT JOIN accounts a ON a.account_id = ap.account_id
+        WHERE ap.cpa IS NOT NULL AND ap.cpa > 0
+    """, anchor))
+
+    signals = []
+    for acct, cpa, conv, vertical in rows:
+        base = _bench.benchmark_cpa(vertical)
+        if base is None:           # vertical not benchmarked (or unknown) -> skip
+            continue
+        expected = base * season
+        if cpa <= high_mult * expected:
+            continue
+        ratio = cpa / expected if expected else 0
+        signals.append(Signal(
+            signal_id=_id(), account_id=acct,
+            domain=PatternDomain.BIDDING_STRATEGY,
+            signal_type="vertical_cpa_benchmark", severity=Severity.WARNING,
+            value=cpa, threshold=high_mult * expected,
+            message=(f"CPA ${cpa:,.0f} is {ratio:.1f}x the {vertical} industry benchmark "
+                     f"(${expected:,.0f} seasonally-adjusted) — expensive for the vertical"),
+            data={"cpa": cpa, "vertical": vertical, "benchmark_cpa": base,
+                  "seasonal_multiplier": season, "expected_cpa": expected,
+                  "ratio": ratio, "conv": conv},
             detected_at=_now(),
         ))
     return signals

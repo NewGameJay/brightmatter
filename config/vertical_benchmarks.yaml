@@ -1,0 +1,68 @@
+# External vertical CPA benchmarks (roadmap 1.4, absolute-check complement to
+# the segment-relative cross_account_outlier).
+#
+# benchmark_cpa is the expected blended CPA ($) per vertical, derived as
+# WordStream CPC / CVR by industry (research/benchmarks/industry-benchmarks.md).
+# These are COARSE market averages — business model within a vertical (lead gen
+# vs ecommerce), geo, and price point move CPA a lot — so the detector only
+# flags EGREGIOUS deviation (> high_multiple x the seasonally-adjusted
+# benchmark), and its harness carries the same caveats as cross_account_outlier.
+
+benchmark_cpa:          # $ expected CPA, vertical -> WordStream industry source
+  apparel: 108          # Apparel/Fashion & Jewelry ($4.31 / 3.99%)
+  collectibles: 91      # Shopping, Collectibles & Gifts ($3.49 / 3.83%)
+  baby_kids: 91         # Shopping
+  smart_home: 95        # Shopping / Home
+  food_beverage: 29     # Restaurants & Food ($2.05 / 7.09%)
+  supplements: 74       # Health & Fitness ($5.00 / 6.80%)
+  fitness: 74           # Health & Fitness
+  beauty: 73            # Beauty & Personal Care ($5.70 / 7.82%)
+  pets: 30              # Animals & Pets ($3.97 / 13.07%)
+  automotive: 31        # Automotive — For Sale ($2.41 / 7.76%)
+  sporting_goods: 35    # Sports & Recreation ($2.64 / 7.62%)
+  outdoors_fishing: 35  # Sports & Recreation
+  furniture: 141        # Furniture ($3.86 / 2.73%)
+  home_goods: 107       # Home & Home Improvement ($7.85 / 7.33%)
+  home_improvement: 107 # Home & Home Improvement
+  appliances: 107       # Home & Home Improvement
+  pool_spa: 107         # Home & Home Improvement (pools/spas are home improvement)
+  home_services: 107    # Home & Home Improvement (services)
+  energy: 107           # Home & Home Improvement (solar)
+  healthcare: 43        # Physicians & Surgeons ($5.00 / 11.62%)
+  medical_cosmetic: 43  # Physicians & Surgeons
+  dental: 86            # Dentists & Dental Services ($7.85 / 9.08%)
+  sports_dental: 86     # Dentists & Dental Services
+  education: 55         # Education & Instruction ($6.23 / 11.38%)
+  education_test_prep: 55
+  real_estate: 77       # Real Estate ($2.53 / 3.28%)
+  legal: 160            # Attorneys & Legal (CVR 5.09%, high legal CPC)
+  finance: 136          # Finance & Insurance ($3.46 / 2.55%)
+  fintech_crypto: 136   # Finance & Insurance
+  tax_services: 60      # Personal Services ($5.81 / 9.74%)
+  hospitality_country_club: 60  # Personal Services / leisure
+  software: 109         # Business Services ($5.58 / 5.14%)
+  agency_marketing: 109 # Business Services
+  b2b_other: 109        # Business Services
+  safety_gear: 79       # Industrial & Commercial ($5.70 / 7.17%)
+  safety_industrial: 79
+  industrial_supply: 79
+  # nonprofit intentionally omitted — grant accounts are out of scope.
+
+# Quarterly multiplier on the expected CPA (proxy for seasonal competition:
+# Q4 holiday auctions push CPA up, Q1 post-holiday eases). Refine with internal
+# data as it accumulates (Phase 2 seasonal_baselines).
+seasonal_cpa_multiplier:
+  1: 0.95
+  2: 1.0
+  3: 1.0
+  4: 1.2
+
+detector:
+  window_days: 30
+  min_conversions: 30          # CPA needs volume to be stable
+  min_cost_micros: 3000000000  # $3k/window floor
+  high_multiple: 3.0           # flag CPA > 3x the seasonally-adjusted benchmark
+
+sources:
+  - "research/benchmarks/industry-benchmarks.md — WordStream CPC-by-industry + CVR-by-industry tables (CPA = CPC / CVR)"
+  - "seasonal multipliers: proxy pending internal seasonal_baselines (Phase 2.2)"
