@@ -10,7 +10,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from brightmatter.analysis.change_detectors import run_all_change_detectors
+from brightmatter.analysis.change_detectors import (
+    _data_anchor_date,
+    run_all_change_detectors,
+    windowed,
+)
 from brightmatter.models.patterns import PatternDomain, Severity, Signal
 from brightmatter.storage.database import Database
 from brightmatter.thresholds import accounts_to_skip_for, effective_thresholds
@@ -85,7 +89,10 @@ def _apply_skip_overrides(db: Database, signals: list[Signal]) -> list[Signal]:
 
 def detect_tracking_breaks(db: Database) -> list[Signal]:
     """Detect accounts where conversions dropped >80% overnight across all campaigns."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH daily AS (
             SELECT account_id, date,
                    sum(conversions) as total_conv,
@@ -108,7 +115,7 @@ def detect_tracking_breaks(db: Database) -> list[Signal]:
         SELECT * FROM comparison
         WHERE current_conv < prior_conv * 0.2
           AND current_clicks > prior_clicks * 0.7
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -161,7 +168,10 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → cpa_spike.
     """
     th = effective_thresholds("cpa_spike")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         WITH recent AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as recent_cpa,
@@ -190,7 +200,7 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
         FROM recent r
         JOIN baseline b ON r.account_id = b.account_id AND r.campaign_id = b.campaign_id
         WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])}
-    """)
+    """, anchor))
     signals = []
     mult = th['recent_cpa_multiplier']
     for r in rows:
@@ -215,7 +225,10 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → budget_limited_is.
     """
     th = effective_thresholds("budget_limited_is")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
                avg(search_budget_lost_is) as avg_budget_lost,
                avg(search_rank_lost_is) as avg_rank_lost,
@@ -226,7 +239,7 @@ def detect_impression_share_loss(db: Database) -> list[Signal]:
         GROUP BY account_id, campaign_id, campaign_name
         HAVING avg(search_budget_lost_is) > {float(th['avg_budget_lost_is_min'])}
            AND sum(cost_micros) > {int(th['total_cost_micros_min'])}
-    """)
+    """, anchor))
     signals = []
     bl_min = th['avg_budget_lost_is_min']
     for r in rows:
@@ -251,10 +264,13 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → cvr_drop.
     """
     th = effective_thresholds("cvr_drop")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     cur_w = int(th['current_window_days'])
     pri_w = int(th['prior_window_days'])
     window = cur_w + pri_w
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         WITH weekly AS (
             SELECT account_id, campaign_id, campaign_name,
                    CASE WHEN date >= current_date - {cur_w} THEN 'current' ELSE 'prior' END as period,
@@ -276,7 +292,7 @@ def detect_cvr_anomalies(db: Database) -> list[Signal]:
           AND p.conv > {float(th['prior_conv_min'])}
           AND p.conv / NULLIF(p.clicks, 0) > {float(th['prior_cvr_min'])}
           AND c.conv / NULLIF(c.clicks, 0) < p.conv / NULLIF(p.clicks, 0) * {float(th['cvr_drop_ratio'])}
-    """)
+    """, anchor))
     signals = []
     ratio = th['cvr_drop_ratio']
     for r in rows:
@@ -314,7 +330,10 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
 
     # Pull candidates with a permissive SQL pass — apply per-account thresholds
     # in Python so vertical/tier overrides can tighten or loosen as configured.
-    candidates = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    candidates = db.fetchall(windowed("""
         WITH by_type AS (
             SELECT dm.account_id, dm.campaign_name,
                    CASE WHEN lower(dm.campaign_name) LIKE '%brand%' THEN 'brand' ELSE 'nonbrand' END as label,
@@ -346,7 +365,7 @@ def detect_brand_nonbrand_contamination(db: Database) -> list[Signal]:
         FROM account_rollup ar
         LEFT JOIN accounts a USING (account_id)
         WHERE ar.brand_cost > 0 AND ar.nonbrand_cost > 0
-    """)
+    """, anchor))
 
     signals: list[Signal] = []
     for (acct_id, biz_type, spend_tier, vertical, acct_name,
@@ -448,7 +467,10 @@ def detect_pmax_channel_imbalance(db: Database) -> list[Signal]:
     """Flag PMax campaigns in ecommerce accounts with low Shopping allocation.
     Note: PMax channel breakdown requires asset group reporting; this is a proxy
     using overall PMax vs Shopping campaign spend ratios at the account level."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH spend_by_type AS (
             SELECT dm.account_id,
                    sum(CASE WHEN dm.campaign_type = 'PERFORMANCE_MAX' THEN dm.cost_micros ELSE 0 END) as pmax_spend,
@@ -466,7 +488,7 @@ def detect_pmax_channel_imbalance(db: Database) -> list[Signal]:
         WHERE a.business_type = 'ecommerce'
           AND s.pmax_spend > s.total_spend * 0.5
           AND s.shopping_spend < s.pmax_spend * 0.3
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         pmax_pct = r[1] / r[3] if r[3] else 0
@@ -491,9 +513,12 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → auto_applied_changes.
     """
     th = effective_thresholds("auto_applied_changes")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     window = int(th['window_days'])
     crit = int(th['critical_count'])
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, count(*) as auto_count,
                min(change_timestamp) as earliest,
                max(change_timestamp) as latest
@@ -503,7 +528,7 @@ def detect_auto_applied_changes(db: Database) -> list[Signal]:
         GROUP BY account_id
         HAVING count(*) > 0
         ORDER BY count(*) DESC
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         severity = Severity.CRITICAL if r[1] > crit else Severity.WARNING
@@ -528,8 +553,11 @@ def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → budget_capped.
     """
     th = effective_thresholds("budget_capped")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     window = int(th['window_days'])
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
                avg(search_budget_lost_is) as avg_budget_lost,
                count(*) as days_checked
@@ -539,7 +567,7 @@ def detect_budget_capped_campaigns(db: Database) -> list[Signal]:
           AND search_budget_lost_is > {float(th['avg_budget_lost_is_min'])}
         GROUP BY account_id, campaign_id, campaign_name
         HAVING count(*) >= {int(th['min_days_capped'])}
-    """)
+    """, anchor))
     signals = []
     threshold = th['avg_budget_lost_is_min']
     for r in rows:
@@ -564,8 +592,11 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → insufficient_conversions_for_strategy.
     """
     th = effective_thresholds("insufficient_conversions_for_strategy")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     strategies_in = ", ".join(f"'{s}'" for s in th.get("strategies", []))
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name, bidding_strategy,
                sum(conversions) as monthly_conv
         FROM daily_metrics
@@ -573,7 +604,7 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
           AND bidding_strategy IN ({strategies_in})
         GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
         HAVING sum(conversions) < {float(th['monthly_conv_min'])}
-    """)
+    """, anchor))
     signals = []
     minimum = th['monthly_conv_min']
     for r in rows:
@@ -676,7 +707,10 @@ def detect_duplicate_primary_conversions(db: Database) -> list[Signal]:
 
 def detect_missing_conversion_value(db: Database) -> list[Signal]:
     """Flag accounts with conversions but zero conversion value (missing value tracking)."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         SELECT account_id,
                sum(conversions) as total_conv,
                sum(conversion_value) as total_value,
@@ -687,7 +721,7 @@ def detect_missing_conversion_value(db: Database) -> list[Signal]:
         HAVING sum(conversions) > 50
            AND sum(conversion_value) = 0
            AND sum(cost_micros) > 5000000000
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -711,7 +745,10 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → over_segmentation.
     """
     th = effective_thresholds("over_segmentation")
-    rows = db.fetchall(f"""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed(f"""
         WITH campaign_conv AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(conversions) as monthly_conv
@@ -737,7 +774,7 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
                starving_campaigns * 1.0 / total_campaigns as starving_pct
         FROM account_summary
         WHERE starving_campaigns * 1.0 / total_campaigns > {float(th['starving_share_min'])}
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -759,7 +796,10 @@ def detect_over_segmentation(db: Database) -> list[Signal]:
 
 def detect_missing_brand_separation(db: Database) -> list[Signal]:
     """Flag accounts with no dedicated brand campaign despite having brand-like performance."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH campaign_perf AS (
             SELECT account_id, campaign_id, campaign_name, campaign_type,
                    sum(conversions) / NULLIF(sum(clicks), 0) as cvr,
@@ -784,7 +824,7 @@ def detect_missing_brand_separation(db: Database) -> list[Signal]:
         FROM account_brand
         WHERE has_brand_campaign = 0
           AND max_cvr > 0.10
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(
@@ -804,7 +844,10 @@ def detect_missing_brand_separation(db: Database) -> list[Signal]:
 
 def detect_campaign_type_gaps(db: Database) -> list[Signal]:
     """Flag accounts missing expected campaign types based on their profile."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         SELECT account_id,
                count(DISTINCT CASE WHEN campaign_type = 'SEARCH' THEN campaign_id END) as search_count,
                count(DISTINCT CASE WHEN campaign_type = 'PERFORMANCE_MAX' THEN campaign_id END) as pmax_count,
@@ -816,7 +859,7 @@ def detect_campaign_type_gaps(db: Database) -> list[Signal]:
           AND status = 'ENABLED'
         GROUP BY account_id
         HAVING sum(cost_micros) > 10000000000
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         acct, search, pmax, shopping, total, spend = r
@@ -848,8 +891,11 @@ def detect_campaign_type_gaps(db: Database) -> list[Signal]:
 
 def detect_broad_without_smart_bidding(db: Database) -> list[Signal]:
     """Flag campaigns using broad match keywords with manual bidding."""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     try:
-        rows = db.fetchall("""
+        rows = db.fetchall(windowed("""
             SELECT kc.account_id, kc.campaign_id, kc.campaign_name,
                    kc.broad_count, kc.keyword_count,
                    dm.bidding_strategy
@@ -861,7 +907,7 @@ def detect_broad_without_smart_bidding(db: Database) -> list[Signal]:
             ) dm ON kc.account_id = dm.account_id AND kc.campaign_id = dm.campaign_id
             WHERE kc.broad_count > 0
               AND dm.bidding_strategy IN ('MANUAL_CPC', 'MANUAL_CPM', 'MAXIMIZE_CLICKS')
-        """)
+        """, anchor))
     except Exception:
         return []
     signals = []
@@ -953,7 +999,10 @@ def detect_missing_extensions(db: Database) -> list[Signal]:
 
 def detect_cross_account_outlier(db: Database) -> list[Signal]:
     """Flag accounts whose CPA is significantly worse than the peer group."""
-    rows = db.fetchall("""
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
+    rows = db.fetchall(windowed("""
         WITH account_perf AS (
             SELECT account_id,
                    sum(cost_micros) / 1000000.0 as cost,
@@ -975,7 +1024,7 @@ def detect_cross_account_outlier(db: Database) -> list[Signal]:
         FROM account_perf ap, stats s
         WHERE ap.cpa > s.mean_cpa + 2 * s.std_cpa
           AND s.std_cpa > 0
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         acct, cpa, cost, conv, mean_cpa, std_cpa = r
@@ -1001,8 +1050,11 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
     Thresholds: config/thresholds.yaml → pmax_low_conv_volume.
     """
     th = effective_thresholds("pmax_low_conv_volume")
+    anchor = _data_anchor_date(db)
+    if anchor is None:
+        return []
     minimum = th['monthly_conv_min']
-    rows = db.fetchall(f"""
+    rows = db.fetchall(windowed(f"""
         SELECT account_id, campaign_id, campaign_name,
                sum(conversions) as monthly_conv,
                sum(cost_micros) / 1000000.0 as monthly_cost
@@ -1013,7 +1065,7 @@ def detect_pmax_low_conversion_volume(db: Database) -> list[Signal]:
         GROUP BY account_id, campaign_id, campaign_name
         HAVING sum(conversions) < {float(minimum)}
            AND sum(cost_micros) > {int(th['monthly_cost_micros_min'])}
-    """)
+    """, anchor))
     signals = []
     for r in rows:
         signals.append(Signal(

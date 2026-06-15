@@ -50,6 +50,20 @@ def _data_anchor_date(db: Database) -> str | None:
     return row[0].isoformat()
 
 
+def windowed(sql: str, anchor: str) -> str:
+    """Rebind ``current_date`` in detector SQL to the data anchor date.
+
+    Substitutes the literal token ``current_date`` with ``DATE 'anchor'`` so
+    every ``date >= current_date - N`` window lands on the ingested data range
+    rather than real-world today. Without this, state-detectors silently emit
+    zero signals whenever the data is staler than their shortest window (which
+    happens routinely between ingest runs). Safe for plain strings,
+    pre-evaluated f-strings, and ``?``-parameterized queries — it touches only
+    the keyword. Callers must guard ``anchor is None`` (empty table) first.
+    """
+    return sql.replace("current_date", f"DATE '{anchor}'")
+
+
 def detect_budget_capped_change(db: Database) -> list[Signal]:
     """Week-over-week delta in avg(search_budget_lost_is) at the campaign level.
 
