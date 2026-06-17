@@ -40,24 +40,37 @@ class EpisodeOutcome(str, Enum):
     IMPROVED = "improved"
     DEGRADED = "degraded"
     NEUTRAL = "neutral"
+    CONFOUNDED = "confounded"   # other change categories hit the same campaign in the window
     PENDING = "pending"
 
 
 class Episode(BaseModel):
     """A change-to-outcome pair: what changed, what happened before and after.
 
-    This is BrightMatter's core learning unit. Every change becomes an episode
-    once enough post-change data exists to measure the outcome.
+    Phase 1.5: an episode is a BATCH of same-category changes on one campaign on
+    one day (not one per raw change event), measured against pre/post windows.
+    PRELIMINARY by construction — it records what happened, never claims
+    causation, and carries no trend adjustment (that is Phase 2).
     """
 
     episode_id: str
     account_id: str
-    change_event_id: str
+    change_event_id: str          # representative event id for the batch
+    campaign_id: str = ""
     change_description: str = ""
     domain: str = ""
+    change_category: str = ""     # taxonomy: budget / bidding / targeting_keyword / ...
+    change_count: int = 1         # how many raw change events in the batch
+    actor: str = ""               # auto_applied / human / mixed
+    confounded: bool = False      # other change categories hit the campaign in the window
     pre_metrics: dict[str, Any] = Field(default_factory=dict)
     post_metrics: dict[str, Any] = Field(default_factory=dict)
     outcome: EpisodeOutcome = EpisodeOutcome.PENDING
     outcome_magnitude: float = 0.0
     outcome_detail: str = ""
+    # Confidence framing (same honesty layer as signals) — preliminary, no causation.
+    confidence_tier: str = ""
+    what_we_know: str = ""
+    what_we_cant_rule_out: str = ""
+    check_next: str = ""
     recorded_at: Optional[datetime] = None

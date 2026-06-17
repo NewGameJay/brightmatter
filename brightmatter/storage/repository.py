@@ -201,13 +201,18 @@ class Repository:
 
     def insert_episode(self, episode: Episode) -> None:
         self.db.execute(
-            """INSERT OR REPLACE INTO episodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO episodes VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 episode.episode_id, episode.account_id, episode.change_event_id,
                 episode.change_description, episode.domain,
                 json.dumps(episode.pre_metrics), json.dumps(episode.post_metrics),
                 episode.outcome.value, episode.outcome_magnitude,
                 episode.outcome_detail, episode.recorded_at or datetime.now(timezone.utc),
+                episode.campaign_id, episode.change_category, episode.change_count,
+                episode.actor, episode.confounded,
+                episode.confidence_tier, episode.what_we_know,
+                episode.what_we_cant_rule_out, episode.check_next,
             ),
         )
 

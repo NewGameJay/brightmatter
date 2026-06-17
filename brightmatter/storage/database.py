@@ -206,7 +206,16 @@ CREATE TABLE IF NOT EXISTS episodes (
     outcome           TEXT DEFAULT 'pending',
     outcome_magnitude DOUBLE DEFAULT 0,
     outcome_detail    TEXT,
-    recorded_at       TIMESTAMP DEFAULT current_timestamp
+    recorded_at       TIMESTAMP DEFAULT current_timestamp,
+    campaign_id       TEXT DEFAULT '',
+    change_category   TEXT DEFAULT '',
+    change_count      INTEGER DEFAULT 1,
+    actor             TEXT DEFAULT '',
+    confounded        BOOLEAN DEFAULT FALSE,
+    confidence_tier        TEXT DEFAULT '',
+    what_we_know           TEXT DEFAULT '',
+    what_we_cant_rule_out  TEXT DEFAULT '',
+    check_next             TEXT DEFAULT ''
 );
 """
 
@@ -233,6 +242,21 @@ class Database:
             try:
                 self.conn.execute(
                     f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {col} TEXT DEFAULT ''"
+                )
+            except Exception:
+                pass
+        # Migrate episodes to the Phase 1.5 batch/taxonomy/confidence columns.
+        _episode_cols = [
+            ("campaign_id", "TEXT DEFAULT ''"), ("change_category", "TEXT DEFAULT ''"),
+            ("change_count", "INTEGER DEFAULT 1"), ("actor", "TEXT DEFAULT ''"),
+            ("confounded", "BOOLEAN DEFAULT FALSE"),
+            ("confidence_tier", "TEXT DEFAULT ''"), ("what_we_know", "TEXT DEFAULT ''"),
+            ("what_we_cant_rule_out", "TEXT DEFAULT ''"), ("check_next", "TEXT DEFAULT ''"),
+        ]
+        for col, decl in _episode_cols:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE episodes ADD COLUMN IF NOT EXISTS {col} {decl}"
                 )
             except Exception:
                 pass

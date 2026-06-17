@@ -209,22 +209,31 @@ def cmd_episodes(args):
         db.close()
         return
 
+    from rich.markup import escape
+
     table = Table(title="Episodes (Change → Outcome)")
     table.add_column("Account")
     table.add_column("Change")
     table.add_column("Outcome", style="bold")
+    table.add_column("Conf?")
     table.add_column("Magnitude")
     table.add_column("Detail")
 
-    outcome_style = {"improved": "green", "degraded": "red", "neutral": "dim", "pending": "yellow"}
-    for i in range(min(len(data["episode_id"]), args.limit)):
-        out = data["outcome"][i]
+    outcome_style = {"improved": "green", "degraded": "red", "neutral": "dim",
+                     "confounded": "magenta", "pending": "yellow"}
+    n = len(data["episode_id"])
+    has = lambda k: k in data  # noqa: E731 — new columns may be absent on old DBs
+    for i in range(min(n, args.limit)):
+        out = data["outcome"][i] or ""
+        style = outcome_style.get(out, "white")
+        confounded = bool(data["confounded"][i]) if has("confounded") else False
         table.add_row(
-            data["account_id"][i],
-            data["change_description"][i][:50] if data["change_description"][i] else "",
-            f"[{outcome_style.get(out, '')}]{out}[/]",
+            escape(data["account_id"][i] or ""),
+            escape((data["change_description"][i] or "")[:48]),
+            f"[{style}]{escape(out)}[/{style}]",
+            "[magenta]✓[/magenta]" if confounded else "",
             f"{data['outcome_magnitude'][i]:.0%}" if data["outcome_magnitude"][i] else "—",
-            data["outcome_detail"][i][:60] if data["outcome_detail"][i] else "",
+            escape((data["outcome_detail"][i] or "")[:60]),
         )
     console.print(table)
     db.close()
