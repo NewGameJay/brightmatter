@@ -1393,8 +1393,7 @@ def detect_vertical_cpa_benchmark(db: Database) -> list[Signal]:
     min_conv = float(p.get("min_conversions", 30))
     min_cost = int(p.get("min_cost_micros", 3000000000))
     high_mult = float(p.get("high_multiple", 3.0))
-    quarter = (int(anchor[5:7]) - 1) // 3 + 1
-    season = _bench.seasonal_multiplier(quarter)
+    month = int(anchor[5:7])  # seasonal index keyed by the data's month, per vertical
 
     rows = db.fetchall(windowed(f"""
         SELECT ap.account_id, ap.cpa, ap.conv, COALESCE(a.vertical, '') as vertical
@@ -1416,6 +1415,7 @@ def detect_vertical_cpa_benchmark(db: Database) -> list[Signal]:
         base = _bench.benchmark_cpa(vertical)
         if base is None:           # vertical not benchmarked (or unknown) -> skip
             continue
+        season = _bench.seasonal_cpa_index(vertical, month)  # per-vertical monthly index
         expected = base * season
         if cpa <= high_mult * expected:
             continue
@@ -1426,9 +1426,10 @@ def detect_vertical_cpa_benchmark(db: Database) -> list[Signal]:
             signal_type="vertical_cpa_benchmark", severity=Severity.WARNING,
             value=cpa, threshold=high_mult * expected,
             message=(f"CPA ${cpa:,.0f} is {ratio:.1f}x the {vertical} industry benchmark "
-                     f"(${expected:,.0f} seasonally-adjusted) — expensive for the vertical"),
+                     f"(${expected:,.0f}, {season:.2f}x seasonal index for the month) "
+                     f"— expensive for the vertical"),
             data={"cpa": cpa, "vertical": vertical, "benchmark_cpa": base,
-                  "seasonal_multiplier": season, "expected_cpa": expected,
+                  "seasonal_index": season, "month": month, "expected_cpa": expected,
                   "ratio": ratio, "conv": conv},
             detected_at=_now(),
         ))

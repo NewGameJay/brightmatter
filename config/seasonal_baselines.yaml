@@ -1,0 +1,36 @@
+# External seasonal baselines (Phase 2.6) — monthly CPA index by vertical.
+# 1.0 = the vertical's annual-average CPA. >1 = CPA typically ELEVATED that month
+# (post-holiday softness, low-intent traffic); <1 = typically efficient (BFCM/
+# holiday volume drives CPA down). Source: Triple Whale / WordStream monthly
+# seasonality patterns. A proxy until BrightMatter has 12+ months of its own
+# data to build internal per-vertical/per-tier curves.
+
+# Used to ask "is this CPA normal for this vertical at this time of year?" before
+# flagging it — so a normal Q1 ecommerce dip isn't mistaken for a problem.
+
+default:   # gentle seasonality — applies to verticals without a specific curve
+  jan: 1.12
+  feb: 1.08
+  mar: 1.04
+  apr: 1.00
+  may: 0.98
+  jun: 0.96
+  jul: 0.95
+  aug: 0.96
+  sep: 0.99
+  oct: 1.02
+  nov: 0.93
+  dec: 0.90
+
+verticals:
+  apparel:        {jan: 1.35, feb: 1.25, mar: 1.15, apr: 1.00, may: 0.95, jun: 0.90, jul: 0.85, aug: 0.90, sep: 0.95, oct: 1.00, nov: 0.80, dec: 0.75}
+  beauty:         {jan: 1.30, feb: 1.20, mar: 1.10, apr: 1.00, may: 0.95, jun: 0.92, jul: 0.90, aug: 0.92, sep: 0.98, oct: 1.02, nov: 0.82, dec: 0.78}
+  collectibles:   {jan: 1.30, feb: 1.18, mar: 1.08, apr: 1.00, may: 0.96, jun: 0.93, jul: 0.92, aug: 0.95, sep: 1.00, oct: 1.05, nov: 0.78, dec: 0.72}
+  baby_kids:      {jan: 1.28, feb: 1.18, mar: 1.08, apr: 1.00, may: 0.96, jun: 0.93, jul: 0.92, aug: 0.96, sep: 1.00, oct: 1.02, nov: 0.82, dec: 0.78}
+  furniture:      {jan: 1.20, feb: 1.12, mar: 1.05, apr: 1.00, may: 1.02, jun: 1.00, jul: 0.98, aug: 0.96, sep: 0.98, oct: 1.00, nov: 0.88, dec: 0.85}
+  home_goods:     {jan: 1.20, feb: 1.12, mar: 1.05, apr: 1.00, may: 1.00, jun: 0.98, jul: 0.96, aug: 0.96, sep: 0.98, oct: 1.00, nov: 0.85, dec: 0.82}
+  food_beverage:  {jan: 1.15, feb: 1.08, mar: 1.04, apr: 1.00, may: 0.98, jun: 0.96, jul: 0.95, aug: 0.96, sep: 1.00, oct: 1.02, nov: 0.90, dec: 0.88}
+  pool_spa:       {jan: 1.25, feb: 1.15, mar: 1.00, apr: 0.90, may: 0.85, jun: 0.85, jul: 0.90, aug: 0.95, sep: 1.05, oct: 1.15, nov: 1.20, dec: 1.25}  # summer-peak demand
+  sporting_goods: {jan: 1.10, feb: 1.05, mar: 1.00, apr: 0.98, may: 0.96, jun: 0.95, jul: 0.95, aug: 0.96, sep: 0.98, oct: 1.00, nov: 0.88, dec: 0.85}
+  healthcare:     {jan: 0.95, feb: 0.98, mar: 1.00, apr: 1.02, may: 1.02, jun: 1.03, jul: 1.05, aug: 1.03, sep: 1.00, oct: 0.98, nov: 1.00, dec: 1.05}  # lead-gen, mild
+  legal:          {jan: 0.95, feb: 0.98, mar: 1.00, apr: 1.02, may: 1.02, jun: 1.03, jul: 1.05, aug: 1.03, sep: 1.00, oct: 0.98, nov: 1.02, dec: 1.08}
