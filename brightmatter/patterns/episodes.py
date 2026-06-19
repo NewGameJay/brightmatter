@@ -1,13 +1,16 @@
-"""Episode tracker (Phase 1.5) — links batches of change events to performance.
+"""Episode tracker (Phase 1.5 + 1.75) — links change BUNDLES to performance.
 
-An episode is a BATCH of same-category changes on one campaign on one day:
-  changes happened -> performance before -> performance after -> outcome
+An episode is one campaign-day-actor BUNDLE: all the change categories one
+actor applied to one campaign on one day, classified via bundle_signatures.
+Google auto-applies eligible recommendations together, so a recurring
+multi-category set (budget + campaign_setting) is ONE coordinated action — not
+several confounding changes. Recognizing known bundles recovers episodes the
+naive per-category view marks confounded.
 
-PRELIMINARY by design: it records what happened and what performance looked
-like before/after. It does NOT claim causation and applies NO trend
-adjustment (that is Phase 2). Every episode carries the confidence frame —
-what we know, what we can't rule out, what to check next — so the honest
-limits travel with the record.
+PRELIMINARY by design: records what changed and performance before/after; never
+claims causation; no trend adjustment (Phase 2). Every episode carries the
+confidence frame. Confounding is tracked cross-day and cross-actor: a clean
+bundle has no other action on the same campaign in its post-window.
 """
 
 from __future__ import annotations
@@ -18,27 +21,26 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from brightmatter.models.changes import Episode, EpisodeOutcome
+from brightmatter.patterns import bundle_signatures as bsig
 from brightmatter.patterns import change_taxonomy as tax
 from brightmatter.storage.database import Database
 from brightmatter.storage.repository import Repository
 
 PRE_WINDOW_DAYS = 7
 POST_WINDOW_DAYS = 7
-MIN_DAYS = 4  # need at least this many days of data on each side
+MIN_DAYS = 4
 
 
 def _category_case_sql(column: str = "resource_type") -> str:
-    """Build a SQL CASE that maps resource_type -> category from the taxonomy,
-    so the grouping logic stays single-source with change_taxonomy."""
     whens = "\n".join(
-        f"            WHEN upper({column}) = '{rt}' THEN '{cat}'"
+        f"                WHEN upper({column}) = '{rt}' THEN '{cat}'"
         for rt, cat in tax._RESOURCE_TO_CATEGORY.items()
     )
-    return f"CASE\n{whens}\n            ELSE 'other' END"
+    return f"CASE\n{whens}\n                ELSE 'other' END"
 
 
 class EpisodeTracker:
-    """Builds preliminary episodes from batched change events."""
+    """Builds preliminary bundle episodes from batched change events."""
 
     def __init__(self, repo: Repository, db: Database):
         self.repo = repo
@@ -55,7 +57,6 @@ class EpisodeTracker:
         if rng is None:
             return []
         data_start, anchor = rng
-        # A change is eligible only if a full pre- AND post-window of data exists.
         earliest = data_start + timedelta(days=PRE_WINDOW_DAYS)
         latest = anchor - timedelta(days=POST_WINDOW_DAYS)
         if earliest >= latest:
@@ -65,66 +66,76 @@ class EpisodeTracker:
             self.db.execute("DELETE FROM episodes")
 
         case_sql = _category_case_sql()
-        batches = self.db.fetchall(f"""
-            SELECT account_id,
-                   COALESCE(campaign_id, '') as cid,
-                   CAST(change_timestamp AS DATE) as cdate,
-                   {case_sql} as category,
+        # One row per (account, campaign, day, actor) bundle, with its category set.
+        raw = self.db.fetchall(f"""
+            WITH ev AS (
+                SELECT account_id,
+                       COALESCE(campaign_id, '') as cid,
+                       CAST(change_timestamp AS DATE) as cdate,
+                       actor,
+                       {case_sql} as category,
+                       change_id
+                FROM change_events
+                WHERE CAST(change_timestamp AS DATE) >= ?
+                  AND CAST(change_timestamp AS DATE) <= ?
+            )
+            SELECT account_id, cid, cdate, actor,
+                   list(DISTINCT category) as categories,
                    count(*) as cnt,
-                   count(*) FILTER (WHERE actor = 'auto_applied') as auto_cnt,
-                   count(*) FILTER (WHERE actor = 'human') as human_cnt,
-                   min(change_id) as rep_id,
-                   max(resource_type) as sample_resource
-            FROM change_events
-            WHERE CAST(change_timestamp AS DATE) >= ?
-              AND CAST(change_timestamp AS DATE) <= ?
-            GROUP BY account_id, cid, cdate, category
+                   min(change_id) as rep_id
+            FROM ev
+            GROUP BY account_id, cid, cdate, actor
         """, [earliest, latest])
 
-        # Index batches per (account, campaign) for confounding detection.
+        # All bundles per campaign, for cross-day/cross-actor confound detection.
         by_campaign: dict[tuple[str, str], list[dict]] = defaultdict(list)
-        rows = []
-        for (acct, cid, cdate, category, cnt, auto_cnt, human_cnt, rep_id, sample_rt) in batches:
+        bundles = []
+        for acct, cid, cdate, actor, categories, cnt, rep_id in raw:
             cdate = cdate if isinstance(cdate, date) else date.fromisoformat(str(cdate))
-            b = {"acct": acct, "cid": cid, "cdate": cdate, "category": category,
-                 "cnt": cnt, "auto": auto_cnt or 0, "human": human_cnt or 0,
-                 "rep_id": rep_id, "sample_rt": sample_rt}
-            rows.append(b)
+            cats = frozenset(categories)
+            label, known = bsig.classify_bundle(cats, actor)
+            b = {"acct": acct, "cid": cid, "cdate": cdate, "actor": actor,
+                 "cats": cats, "label": label, "known": known,
+                 "cnt": cnt, "rep_id": rep_id}
+            bundles.append(b)
             by_campaign[(acct, cid)].append(b)
 
         episodes: list[Episode] = []
-        for b in rows:
+        for b in bundles:
             pre = self._period_metrics(b["acct"], b["cid"],
                                        b["cdate"] - timedelta(days=PRE_WINDOW_DAYS), b["cdate"])
             post = self._period_metrics(b["acct"], b["cid"],
                                         b["cdate"], b["cdate"] + timedelta(days=POST_WINDOW_DAYS))
-            if not pre or not post:
-                continue
-            if pre["days"] < MIN_DAYS or post["days"] < MIN_DAYS:
+            if not pre or not post or pre["days"] < MIN_DAYS or post["days"] < MIN_DAYS:
                 continue
 
-            confounders = self._confounders(by_campaign[(b["acct"], b["cid"])], b)
+            # Confounders: any OTHER campaign action (different day or different
+            # actor) within this bundle's post-window. An unknown multi-category
+            # bundle is also self-confounded (can't attribute among its own cats).
+            external = self._confounders(by_campaign[(b["acct"], b["cid"])], b)
+            self_confounded = (not b["known"]) and len(b["cats"]) > 1
+            confounded = bool(external) or self_confounded
+
             outcome, magnitude, detail = self._evaluate_outcome(pre, post)
-            if confounders:
+            if confounded:
                 outcome = EpisodeOutcome.CONFOUNDED
 
-            actor = ("auto_applied" if b["human"] == 0 else
-                     "human" if b["auto"] == 0 else "mixed")
-            cat_label = tax.label(b["category"])
+            cat_label = self._bundle_label(b)
             scope = "campaign" if b["cid"] else "account"
-            frame = self._confidence(b, cat_label, scope, pre, post, outcome, detail, confounders)
+            frame = self._confidence(b, cat_label, scope, pre, post, detail,
+                                     external, self_confounded)
 
             ep = Episode(
                 episode_id=uuid.uuid4().hex[:12],
                 account_id=b["acct"],
                 change_event_id=b["rep_id"] or "",
                 campaign_id=b["cid"],
-                change_description=f"{b['cnt']}x {cat_label} ({actor}) on {b['cdate']}",
-                domain=self._infer_domain(b["category"]),
-                change_category=b["category"],
+                change_description=f"{b['cnt']}x {cat_label} ({b['actor']}) on {b['cdate']}",
+                domain=self._infer_domain(b["label"], b["cats"]),
+                change_category=b["label"],
                 change_count=b["cnt"],
-                actor=actor,
-                confounded=bool(confounders),
+                actor=b["actor"],
+                confounded=confounded,
                 pre_metrics=pre,
                 post_metrics=post,
                 outcome=outcome,
@@ -138,23 +149,41 @@ class EpisodeTracker:
             )
             self.repo.insert_episode(ep)
             episodes.append(ep)
-
+        # Checkpoint so separate reader connections see a consistent state
+        # (avoids cross-process WAL-visibility flakiness on the boolean column).
+        try:
+            self.db.execute("CHECKPOINT")
+        except Exception:
+            pass
         return episodes
 
-    # Backwards-compatible alias (engine.py calls process_pending_episodes).
     def process_pending_episodes(self) -> list[Episode]:
         return self.process_episodes(reset=True)
 
-    def _confounders(self, campaign_batches: list[dict], b: dict) -> list[str]:
-        """Other change categories on the same campaign within this batch's
-        post-window — they make single-cause attribution impossible."""
+    def _confounders(self, campaign_bundles: list[dict], b: dict) -> list[str]:
+        """Other actions in this bundle's post-window that pull a DIFFERENT lever
+        than this bundle did. A repeat of the same category (e.g. another budget
+        tweak two days later) is the same lever — it reinforces the attribution,
+        it doesn't confound it. Only a category OUTSIDE this bundle's own set
+        breaks single-cause attribution. The confounding actor is noted because
+        'confounded by another auto-apply' vs 'by a human' are different (Finding 3)."""
         out = []
-        for other in campaign_batches:
-            if other is b or other["category"] == b["category"]:
+        for other in campaign_bundles:
+            if other is b:
                 continue
-            if b["cdate"] <= other["cdate"] < b["cdate"] + timedelta(days=POST_WINDOW_DAYS):
-                out.append(other["category"])
-        return sorted(set(out))
+            if not (b["cdate"] <= other["cdate"] < b["cdate"] + timedelta(days=POST_WINDOW_DAYS)):
+                continue
+            new_levers = other["cats"] - b["cats"]
+            if new_levers:
+                out.append(f"{other['actor']} {'+'.join(sorted(new_levers))} on {other['cdate']}")
+        return out
+
+    def _bundle_label(self, b: dict) -> str:
+        if bsig.is_bundle(b["label"]):
+            return b["label"]
+        if b["known"]:
+            return tax.label(b["label"])  # single category -> friendly phrase
+        return "+".join(sorted(b["cats"])) + " (unclassified bundle)"
 
     def _period_metrics(self, account_id: str, campaign_id: str,
                         start: date, end: date) -> dict[str, Any]:
@@ -204,34 +233,34 @@ class EpisodeTracker:
         return EpisodeOutcome.NEUTRAL, 0.0, "No material CPA/CVR movement"
 
     def _confidence(self, b: dict, cat_label: str, scope: str, pre: dict, post: dict,
-                    outcome: EpisodeOutcome, detail: str,
-                    confounders: list[str]) -> tuple[str, str, str, str]:
+                    detail: str, external: list[str],
+                    self_confounded: bool) -> tuple[str, str, str, str]:
         where = f"campaign {b['cid']}" if b["cid"] else "the account"
-        know = (f"{b['cnt']} {cat_label}(s) ({b['cnt'] and ('auto-applied' if b['human']==0 else 'human' if b['auto']==0 else 'mixed')}) "
-                f"on {where} on {b['cdate']}. {detail}. "
+        know = (f"{b['cnt']} change(s) — {cat_label} ({b['actor']}) — on {where} on {b['cdate']}. {detail}. "
                 f"Pre {PRE_WINDOW_DAYS}d: CPA ${pre['cpa']:.0f}, CVR {pre['cvr']:.1%}, {pre['conversions']:.0f} conv; "
                 f"post {POST_WINDOW_DAYS}d: CPA ${post['cpa']:.0f}, CVR {post['cvr']:.1%}, {post['conversions']:.0f} conv.")
-        cant_bits = [
-            "the metric may already have been trending before the change (no trend adjustment applied — that's Phase 2)",
-            "seasonal demand or competitor shifts in the same window",
-        ]
-        if confounders:
-            cant_bits.insert(0, f"other changes hit the same {scope} in the window ({', '.join(confounders)}) — "
-                                f"the outcome cannot be attributed to this change alone")
-        cant = "Can't rule out: " + "; ".join(cant_bits) + "."
+        cant = ["the metric may already have been trending before the change "
+                "(no trend adjustment applied — that's Phase 2)",
+                "seasonal demand or competitor shifts in the same window"]
+        if self_confounded:
+            cant.insert(0, "this is an unclassified multi-category change — the effect can't be "
+                           "attributed to any single lever within it")
+        if external:
+            cant.insert(0, f"other actions hit the same {scope} in the window "
+                           f"({'; '.join(external[:3])}{'…' if len(external) > 3 else ''})")
+        cant_s = "Can't rule out: " + "; ".join(cant) + "."
         check = (f"Was CPA/CVR already moving before {b['cdate']}? "
-                 + ("Untangle the overlapping changes listed above. " if confounders else "")
+                 + ("Separate the overlapping actions noted above. " if external else "")
                  + "Trend-adjusted attribution comes in Phase 2.")
-        # Confounded or any movement -> SUGGESTIVE (we see it, can't attribute the cause).
-        # A genuinely flat outcome is a CONFIRMED factual "nothing moved".
-        tier = "CONFIRMED" if outcome == EpisodeOutcome.NEUTRAL else "SUGGESTIVE"
-        return tier, know, cant, check
+        tier = "CONFIRMED" if (not external and not self_confounded
+                               and detail.startswith("No material")) else "SUGGESTIVE"
+        return tier, know, cant_s, check
 
-    def _infer_domain(self, category: str) -> str:
-        mapping = {
-            "budget": "bidding_strategy", "bidding": "bidding_strategy",
-            "campaign_setting": "campaign_structure", "structure": "campaign_structure",
-            "targeting_keyword": "non_branded_search", "ad_creative": "creative",
-            "asset": "creative", "conversion": "landing_page",
-        }
-        return mapping.get(category, "campaign_structure")
+    def _infer_domain(self, label: str, cats: frozenset[str]) -> str:
+        if "budget" in label or "budget" in cats or "bidding" in label:
+            return "bidding_strategy"
+        if "targeting" in label or "targeting_keyword" in cats:
+            return "non_branded_search"
+        if "creative" in label or "asset" in label or {"ad_creative", "asset"} & cats:
+            return "creative"
+        return "campaign_structure"

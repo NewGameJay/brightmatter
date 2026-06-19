@@ -239,6 +239,43 @@ def cmd_episodes(args):
     db.close()
 
 
+def cmd_bundles(args):
+    from brightmatter.patterns.bundle_cards import analyze_bundles
+
+    db, repo = _setup(args.verbose)
+    cards = analyze_bundles(db, min_episodes=args.min)
+    if not cards:
+        console.print("[yellow]No bundle cards. Run 'analyze' (episodes) first.[/yellow]")
+        db.close()
+        return
+
+    conf_style = {"RELIABLE": "green", "DIRECTIONAL": "yellow", "LOW": "dim"}
+    console.print("\n[bold]Bundle → Performance cards[/bold] "
+                  "[dim](clean/attributable episodes only · PRELIMINARY — no trend adjustment, Phase 2)[/dim]\n")
+    for c in cards:
+        n = c["n"]
+        imp, deg, neu = c["improved"], c["degraded"], c["neutral"]
+        head = f"{c['category']}  [dim]({c['actor']})[/dim]"
+        console.print(f"[bold cyan]{head}[/bold cyan]  "
+                      f"[{conf_style.get(c['confidence'],'')}]{c['confidence']}[/]  "
+                      f"n={n}, {c['accounts']} accounts")
+        console.print(f"  improved {imp} ({imp/n:.0%}, avg {c['avg_improve_mag']:.0%}) · "
+                      f"degraded {deg} ({deg/n:.0%}, avg {c['avg_degrade_mag']:.0%}) · "
+                      f"neutral {neu} ({neu/n:.0%})")
+        if c["by_vertical"]:
+            vs = ", ".join(f"{k} {v['improved_pct']:.0%}↑ (n={v['n']})"
+                           for k, v in list(c["by_vertical"].items())[:4])
+            console.print(f"  [dim]vertical:[/dim] {vs}")
+        if c["by_tier"]:
+            ts = ", ".join(f"{k} {v['improved_pct']:.0%}↑ (n={v['n']})"
+                           for k, v in list(c["by_tier"].items())[:4])
+            console.print(f"  [dim]spend tier:[/dim] {ts}")
+        console.print()
+    console.print("[dim]Confidence: RELIABLE n≥30/8+ accts · DIRECTIONAL n≥10/4+ · LOW otherwise. "
+                  "Outcomes are pre-trend-adjustment; pre-existing trajectory not yet isolated.[/dim]")
+    db.close()
+
+
 def cmd_audit(args):
     db, repo = _setup(args.verbose)
     engine = AnalysisEngine(db, repo)
@@ -479,6 +516,9 @@ def main():
     p_episodes.add_argument("--outcome", default=None)
     p_episodes.add_argument("--limit", type=int, default=50)
 
+    p_bundles = sub.add_parser("bundles", help="Bundle → performance cards (Phase 1.75)")
+    p_bundles.add_argument("--min", type=int, default=10, help="Min clean episodes per card")
+
     p_audit = sub.add_parser("audit", help="Deep audit of one account (LLM)")
     p_audit.add_argument("account_id")
 
@@ -498,6 +538,7 @@ def main():
         "signals": cmd_signals,
         "patterns": cmd_patterns,
         "episodes": cmd_episodes,
+        "bundles": cmd_bundles,
         "audit": cmd_audit,
         "validate": cmd_validate,
         "status": cmd_status,
