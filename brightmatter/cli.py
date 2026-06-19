@@ -277,13 +277,14 @@ def cmd_bundles(args):
 
 
 def cmd_trends(args):
-    from brightmatter.analysis.trends import run_trends
+    from brightmatter.analysis.trends import profile_volatility, run_trends
 
     db, repo = _setup(args.verbose)
     if not args.no_recompute:
         with console.status("Computing rolling trends (OLS, 7/14/30d)…"):
             n = run_trends(db)
-        console.print(f"  Computed {n} trend rows.\n")
+            profile_volatility(db)
+        console.print(f"  Computed {n} trend rows (+ volatility profiles).\n")
     table = Table(title="Trend classifications (14-day window)")
     table.add_column("Metric")
     for c in ("improving", "declining", "rising", "falling", "stable", "volatile"):

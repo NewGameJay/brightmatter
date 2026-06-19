@@ -108,6 +108,26 @@ CREATE TABLE IF NOT EXISTS campaign_trends (
 """
 
 
+def profile_volatility(db: Database) -> int:
+    """Phase 2.5 — classify each campaign-metric's 30d volatility from its CV and
+    set a detector threshold multiplier: high-CV campaigns get WIDER thresholds
+    (don't alert on normal noise), low-CV get TIGHTER (any move is unusual)."""
+    db.execute("""
+        UPDATE campaign_trends SET
+            volatility_cv = cv,
+            volatility_class = CASE WHEN cv > 0.40 THEN 'high'
+                                    WHEN cv > 0.15 THEN 'medium' ELSE 'low' END,
+            threshold_multiplier = CASE WHEN cv > 0.40 THEN 1.5
+                                        WHEN cv > 0.15 THEN 1.0 ELSE 0.7 END
+        WHERE window_days = 30
+    """)
+    try:
+        db.execute("CHECKPOINT")
+    except Exception:
+        pass
+    return db.fetchone("SELECT count(*) FROM campaign_trends WHERE window_days = 30 AND volatility_class <> ''")[0]
+
+
 # signal_type -> the campaign trend metric whose trajectory gives it context.
 SIGNAL_METRIC = {
     "cvr_drop": "cvr", "cvr_change": "cvr",

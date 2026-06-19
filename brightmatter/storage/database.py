@@ -226,6 +226,40 @@ CREATE TABLE IF NOT EXISTS episodes (
     adjusted_magnitude     DOUBLE DEFAULT 0,
     trend_contribution_pct DOUBLE DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS campaign_trends (
+    account_id     TEXT NOT NULL,
+    campaign_id    TEXT NOT NULL,
+    metric         TEXT NOT NULL,
+    window_days    INTEGER NOT NULL,
+    slope          DOUBLE,
+    p_value        DOUBLE,
+    r_squared      DOUBLE,
+    classification TEXT,
+    cv             DOUBLE,
+    current_value  DOUBLE,
+    projected_7d   DOUBLE,
+    volatility_cv       DOUBLE,
+    volatility_class    TEXT DEFAULT '',
+    threshold_multiplier DOUBLE DEFAULT 1.0,
+    computed_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, metric, window_days)
+);
+
+CREATE TABLE IF NOT EXISTS regime_changes (
+    account_id   TEXT NOT NULL,
+    campaign_id  TEXT NOT NULL,
+    metric       TEXT NOT NULL,
+    change_date  DATE NOT NULL,
+    pre_mean     DOUBLE,
+    post_mean    DOUBLE,
+    shift_magnitude DOUBLE,
+    shift_direction TEXT,
+    segment_days_before INTEGER,
+    segment_days_after  INTEGER,
+    computed_at  TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, metric, change_date)
+);
 """
 
 

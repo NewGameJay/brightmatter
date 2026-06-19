@@ -210,7 +210,12 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
                b.baseline_cpa / 1000000.0 as baseline_cpa_dollars
         FROM recent r
         JOIN baseline b ON r.account_id = b.account_id AND r.campaign_id = b.campaign_id
+        -- Phase 2.5: widen the spike threshold on high-CPA-volatility campaigns
+        -- (×1.5) and tighten on stable ones (×0.7); 1.0 when no trend computed.
+        LEFT JOIN campaign_trends ct ON ct.account_id = r.account_id
+              AND ct.campaign_id = r.campaign_id AND ct.metric = 'cpa' AND ct.window_days = 30
         WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])}
+                             * COALESCE(ct.threshold_multiplier, 1.0)
     """, anchor))
     signals = []
     mult = th['recent_cpa_multiplier']
