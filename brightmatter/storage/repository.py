@@ -41,19 +41,25 @@ class Repository:
             ],
         )
 
+    # Bare `INSERT ... (account_id, account_name)` rows (e.g. from expansion
+    # scripts seeding the accounts table before ingestion) leave the other
+    # columns NULL. pydantic rejects an explicit None for a defaulted str field,
+    # so drop NULLs and let the model defaults apply.
+    _ACCT_COLS = ["account_id", "account_name", "mcc_id", "business_type", "vertical",
+                  "website_url", "spend_tier", "currency_code", "first_seen", "last_updated"]
+
+    def _row_to_account(self, row) -> Account:
+        return Account(**{k: v for k, v in zip(self._ACCT_COLS, row) if v is not None})
+
     def get_account(self, account_id: str) -> Account | None:
         row = self.db.fetchone("SELECT * FROM accounts WHERE account_id = ?", [account_id])
         if not row:
             return None
-        cols = ["account_id", "account_name", "mcc_id", "business_type", "vertical",
-                "website_url", "spend_tier", "currency_code", "first_seen", "last_updated"]
-        return Account(**dict(zip(cols, row)))
+        return self._row_to_account(row)
 
     def list_accounts(self) -> list[Account]:
         rows = self.db.fetchall("SELECT * FROM accounts ORDER BY account_name")
-        cols = ["account_id", "account_name", "mcc_id", "business_type", "vertical",
-                "website_url", "spend_tier", "currency_code", "first_seen", "last_updated"]
-        return [Account(**dict(zip(cols, r))) for r in rows]
+        return [self._row_to_account(r) for r in rows]
 
     # ── Daily Metrics ──
 

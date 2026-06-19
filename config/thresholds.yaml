@@ -371,6 +371,8 @@ detectors:
       baseline_conv_min: 3
       recent_active_days_min: 3
       max_single_day_share_max: 0.50
+      aov_lift_max: 2.0          # exempt spikes where recent AOV >= 2x baseline (harness T4)
+      use_volatility_multiplier: false  # 2.7 disconfirmed it: discarded real spikes, kept the FPs
     sources:
       - threshold: recent_cpa_multiplier
         value: 3.0
@@ -424,6 +426,36 @@ detectors:
         revisit: >
           If the detector under-fires, try 0.60 before relaxing further.
           0.50 corresponds to "one day is the median of the rest combined."
+      - threshold: aov_lift_max
+        value: 2.0
+        rationale: >
+          The 2.7 false-positive measurement (scripts/phase2_7_fp_measure.py,
+          223-account panel) found that EVERY cpa_spike false positive traces
+          to harness test T4: recent AOV rose >=2x, so the higher CPA is buying
+          higher-value conversions, not degrading. Gating that class at the
+          detector (exempt spikes where recent_aov >= 2x baseline_aov) removes
+          the real FP source directly — the same play as the tROAS value
+          exemption in insufficient_conversions (3.6). 2.0 mirrors T4's exact
+          cutoff so the detector never emits a signal T4 would disconfirm.
+        source: harness T4 + 2.7 FP measurement (docs/phase-3-prereqs-2026-06.md)
+        confidence: prior
+        revisit: if a 30-day run shows real degradations being suppressed by it
+      - threshold: use_volatility_multiplier
+        value: false
+        rationale: >
+          Phase 2.5 widened the spike threshold (x1.5) on high-CPA-volatility
+          campaigns, on the theory that noisy campaigns produce false spikes.
+          The 2.7 measurement DISCONFIRMED this: of 33 flat spikes, the
+          volatility widening suppressed 19 — and the harness found ALL 19 were
+          real (0% FP), while the 14 it kept held all 3 true false positives
+          (21% FP). Widening keys on CPA volatility, which is orthogonal to the
+          actual FP class (AOV lift), so it discards true positives and retains
+          the false ones. Disabled. The aov_lift_max gate above replaces it with
+          a mechanism aimed at the real FP source. Volatility profiling is
+          retained for other uses; only its application to cpa_spike is removed.
+        source: 2.7 FP measurement (scripts/phase2_7_fp_measure.py)
+        confidence: prior
+        revisit: if a future panel shows volatility-driven FPs the AOV gate misses
     overrides: []
 
   budget_capped:
@@ -716,6 +748,9 @@ detectors:
       window_days: 30
       monthly_conv_min: 15
       min_campaign_age_days: 14
+      min_spend_30d: 500
+      troas_value_sufficient: 5000
+      troas_conv_floor: 8
       strategies:
         - TARGET_CPA
         - TARGET_ROAS
@@ -739,6 +774,32 @@ detectors:
           paused campaign and a 9-day high-value tROAS campaign) on the
           2026-05-09 snapshot, TIGHTEN->clean.
         source: harness T1+T4 (validation/insufficient_conversions.py)
+      - threshold: min_spend_30d
+        value: 500
+        rationale: >
+          At 45 accounts this detector was a clean MONITOR (43 signals). At
+          153 accounts it flooded to 6,710 signals (76% of the entire set):
+          most small Smart-Bidding campaigns convert <15/mo, so the claim is
+          technically true but operationally drowning. A spend floor restores
+          materiality — a target-bid campaign spending <$500/30d isn't worth a
+          marketer's attention regardless of its conversion count. The detector
+          now fires only on campaigns with real money at stake, and severity
+          scales with how far below the conversion threshold the campaign sits
+          (info for borderline, warning for near-zero conv on live spend).
+          Phase 2 finding #4 + Phase 3 spec 3.6.
+        source: docs/phase-2-findings-2026-06.md (finding #4, scale flooding)
+      - threshold: troas_value_sufficient
+        value: 5000
+        rationale: >
+          Once the spend floor concentrates the signal on campaigns that
+          actually spend, the disconfirmation harness (T3) flips: among the
+          surviving TARGET_ROAS campaigns, 8 of ~10 carry enough conversion
+          *value* (>= $5,000 / 30d with >= 8 conversions) for tROAS to optimize
+          on revenue despite a low conversion *count*. tROAS targets value, not
+          count, so "insufficient conversions" is a false claim for them. The
+          detector now exempts TARGET_ROAS campaigns that clear the same
+          value/conv bar T3 disconfirms on, mirroring the harness exactly.
+        source: harness T3 (validation/insufficient_conversions.py, value >= 5000 & conv >= 8)
     overrides:
       - when:
           business_type: nonprofit

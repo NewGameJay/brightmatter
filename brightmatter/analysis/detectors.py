@@ -182,11 +182,19 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
     anchor = _data_anchor_date(db)
     if anchor is None:
         return []
+    # Phase 2.5's volatility multiplier on cpa_spike was disconfirmed by the 2.7
+    # FP measurement (it suppressed real spikes and kept the false ones), so it
+    # is gated off by default. The real FP class — recent AOV rising enough to
+    # justify the higher CPA (harness T4) — is exempted directly via aov_lift_max.
+    vol_term = ("* COALESCE(ct.threshold_multiplier, 1.0)"
+                if th.get("use_volatility_multiplier", False) else "")
+    aov_lift_max = float(th.get("aov_lift_max", 0))
     rows = db.fetchall(windowed(f"""
         WITH recent AS (
             SELECT account_id, campaign_id, campaign_name,
                    sum(cost_micros) / NULLIF(sum(conversions), 0) as recent_cpa,
                    sum(conversions) as recent_conv,
+                   sum(conversion_value) / NULLIF(sum(conversions), 0) as recent_aov,
                    count(DISTINCT CASE WHEN cost_micros > 0 THEN date END) as recent_active_days,
                    max(cost_micros) / NULLIF(sum(cost_micros), 0) as recent_max_day_share
             FROM daily_metrics
@@ -198,7 +206,8 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
         ),
         baseline AS (
             SELECT account_id, campaign_id,
-                   sum(cost_micros) / NULLIF(sum(conversions), 0) as baseline_cpa
+                   sum(cost_micros) / NULLIF(sum(conversions), 0) as baseline_cpa,
+                   sum(conversion_value) / NULLIF(sum(conversions), 0) as baseline_aov
             FROM daily_metrics
             WHERE date >= current_date - {int(th['baseline_window_days'])}
               AND date < current_date - {int(th['recent_window_days'])}
@@ -210,12 +219,13 @@ def detect_cpa_spikes(db: Database) -> list[Signal]:
                b.baseline_cpa / 1000000.0 as baseline_cpa_dollars
         FROM recent r
         JOIN baseline b ON r.account_id = b.account_id AND r.campaign_id = b.campaign_id
-        -- Phase 2.5: widen the spike threshold on high-CPA-volatility campaigns
-        -- (×1.5) and tighten on stable ones (×0.7); 1.0 when no trend computed.
         LEFT JOIN campaign_trends ct ON ct.account_id = r.account_id
               AND ct.campaign_id = r.campaign_id AND ct.metric = 'cpa' AND ct.window_days = 30
-        WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])}
-                             * COALESCE(ct.threshold_multiplier, 1.0)
+        WHERE r.recent_cpa > b.baseline_cpa * {float(th['recent_cpa_multiplier'])} {vol_term}
+          -- harness T4: a CPA rise justified by a >=2x AOV lift isn't degradation
+          AND NOT ({aov_lift_max} > 0
+                   AND b.baseline_aov > 0
+                   AND r.recent_aov >= {aov_lift_max} * b.baseline_aov)
     """, anchor))
     signals = []
     mult = th['recent_cpa_multiplier']
@@ -624,10 +634,15 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
     # Gate out campaigns that are paused (the strategy isn't even running) or
     # too new to have accumulated a month of conversions — both produce low
     # counts for reasons unrelated to a misconfigured strategy (harness T1/T4).
+    min_spend = float(th.get("min_spend_30d", 0))
+    troas_value = float(th.get("troas_value_sufficient", 5000))
+    troas_conv = float(th.get("troas_conv_floor", 8))
     rows = db.fetchall(windowed(f"""
         WITH agg AS (
             SELECT account_id, campaign_id, campaign_name, bidding_strategy,
                    sum(conversions) as monthly_conv,
+                   sum(cost_micros) / 1e6 as spend_30d,
+                   sum(conversion_value) as conv_value,
                    count(CASE WHEN status = 'ENABLED' THEN 1 END) as enabled_days,
                    count(*) as total_days
             FROM daily_metrics
@@ -635,7 +650,13 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
               AND bidding_strategy IN ({strategies_in})
             GROUP BY account_id, campaign_id, campaign_name, bidding_strategy
             HAVING sum(conversions) < {float(th['monthly_conv_min'])}
+               AND sum(cost_micros) / 1e6 >= {min_spend}
                AND count(CASE WHEN status = 'ENABLED' THEN 1 END) > count(*) * 0.5
+               -- tROAS optimizes on value, not count: exempt campaigns with
+               -- enough conversion value (mirrors disconfirmation harness T3).
+               AND NOT (bidding_strategy = 'TARGET_ROAS'
+                        AND sum(conversion_value) >= {troas_value}
+                        AND sum(conversions) >= {troas_conv})
         ),
         age AS (
             SELECT account_id, campaign_id, (max(date) - min(date)) + 1 as age_days
@@ -643,21 +664,28 @@ def detect_bidding_antipatterns(db: Database) -> list[Signal]:
             GROUP BY account_id, campaign_id
         )
         SELECT agg.account_id, agg.campaign_id, agg.campaign_name,
-               agg.bidding_strategy, agg.monthly_conv
+               agg.bidding_strategy, agg.monthly_conv, agg.spend_30d
         FROM agg
         JOIN age USING (account_id, campaign_id)
         WHERE age.age_days >= {int(th['min_campaign_age_days'])}
     """, anchor))
     signals = []
-    minimum = th['monthly_conv_min']
+    minimum = float(th['monthly_conv_min'])
     for r in rows:
+        monthly_conv, spend_30d = r[4], r[5]
+        # Severity scales with distance below the threshold: a campaign burning
+        # real money with near-zero conversions can't optimize at all (warning);
+        # a borderline campaign (e.g. 12 of 15) is informational, not urgent.
+        severity = Severity.WARNING if monthly_conv < minimum * 0.33 else Severity.INFO
         signals.append(Signal(
             signal_id=_id(), account_id=r[0], campaign_id=r[1],
             domain=PatternDomain.BIDDING_STRATEGY,
-            signal_type="insufficient_conversions_for_strategy", severity=Severity.WARNING,
-            value=r[4], threshold=float(minimum),
-            message=f"Campaign '{r[2]}' using {r[3]} with only {r[4]:.0f} conv/month (need {minimum:g}+ for reliable optimization)",
-            data={"campaign_id": r[1], "strategy": r[3], "monthly_conversions": r[4]},
+            signal_type="insufficient_conversions_for_strategy", severity=severity,
+            value=monthly_conv, threshold=minimum,
+            message=f"Campaign '{r[2]}' using {r[3]} with only {monthly_conv:.0f} conv/month "
+                    f"on ${spend_30d:,.0f} spend (need {minimum:g}+ for reliable optimization)",
+            data={"campaign_id": r[1], "strategy": r[3], "monthly_conversions": monthly_conv,
+                  "spend_30d": spend_30d},
             detected_at=_now(),
         ))
     return signals

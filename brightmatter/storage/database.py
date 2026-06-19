@@ -260,6 +260,57 @@ CREATE TABLE IF NOT EXISTS regime_changes (
     computed_at  TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (account_id, campaign_id, metric, change_date)
 );
+
+-- ── Phase 3: segment-scoped learning ──
+CREATE TABLE IF NOT EXISTS segments (
+    segment_id   TEXT PRIMARY KEY,
+    dimension    TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    n_accounts   INTEGER DEFAULT 0,
+    n_episodes   INTEGER DEFAULT 0,
+    computed_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS segment_patterns (
+    segment_id        TEXT NOT NULL,
+    dimension         TEXT NOT NULL,
+    value             TEXT NOT NULL,
+    change_category   TEXT NOT NULL,
+    actor             TEXT NOT NULL,
+    n                 INTEGER DEFAULT 0,
+    n_accounts        INTEGER DEFAULT 0,
+    degraded          INTEGER DEFAULT 0,
+    improved          INTEGER DEFAULT 0,
+    neutral           INTEGER DEFAULT 0,
+    degraded_rate     DOUBLE DEFAULT 0,
+    degraded_ci_low   DOUBLE DEFAULT 0,
+    degraded_ci_high  DOUBLE DEFAULT 0,
+    improved_rate     DOUBLE DEFAULT 0,
+    improved_ci_low   DOUBLE DEFAULT 0,
+    improved_ci_high  DOUBLE DEFAULT 0,
+    confidence        TEXT DEFAULT '',
+    computed_at       TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (segment_id, change_category, actor)
+);
+
+CREATE TABLE IF NOT EXISTS segment_comparisons (
+    segment_id             TEXT NOT NULL,
+    dimension              TEXT NOT NULL,
+    value                  TEXT NOT NULL,
+    change_category        TEXT NOT NULL,
+    actor                  TEXT NOT NULL,
+    n_segment              INTEGER DEFAULT 0,
+    n_rest                 INTEGER DEFAULT 0,
+    degraded_rate_segment  DOUBLE DEFAULT 0,
+    degraded_rate_rest     DOUBLE DEFAULT 0,
+    rate_delta             DOUBLE DEFAULT 0,
+    z                      DOUBLE DEFAULT 0,
+    p_value                DOUBLE DEFAULT 1,
+    significant            BOOLEAN DEFAULT FALSE,
+    direction              TEXT DEFAULT '',
+    computed_at            TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (segment_id, change_category, actor)
+);
 """
 
 
