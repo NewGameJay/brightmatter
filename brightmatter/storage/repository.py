@@ -152,8 +152,12 @@ class Repository:
 
     def insert_signal(self, signal: Signal) -> None:
         self.db.execute(
-            """INSERT OR REPLACE INTO signals VALUES
-               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO signals
+               (signal_id, account_id, campaign_id, domain, signal_type, severity,
+                value, threshold, message, data_json, detected_at,
+                confidence_tier, what_we_know, what_we_cant_rule_out, check_next,
+                trend_context, trend_slope_30d, trend_classification_30d)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 signal.signal_id, signal.account_id, signal.campaign_id,
                 signal.domain.value, signal.signal_type, signal.severity.value,
@@ -161,6 +165,7 @@ class Repository:
                 json.dumps(signal.data), signal.detected_at or datetime.now(timezone.utc),
                 signal.confidence_tier, signal.what_we_know,
                 signal.what_we_cant_rule_out, signal.check_next,
+                signal.trend_context, signal.trend_slope_30d, signal.trend_classification_30d,
             ),
         )
 
@@ -201,8 +206,13 @@ class Repository:
 
     def insert_episode(self, episode: Episode) -> None:
         self.db.execute(
-            """INSERT OR REPLACE INTO episodes VALUES
-               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO episodes
+               (episode_id, account_id, change_event_id, change_description, domain,
+                pre_metrics_json, post_metrics_json, outcome, outcome_magnitude,
+                outcome_detail, recorded_at, campaign_id, change_category, change_count,
+                actor, confounded, confidence_tier, what_we_know,
+                what_we_cant_rule_out, check_next)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 episode.episode_id, episode.account_id, episode.change_event_id,
                 episode.change_description, episode.domain,

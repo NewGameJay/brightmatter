@@ -108,6 +108,57 @@ CREATE TABLE IF NOT EXISTS campaign_trends (
 """
 
 
+# signal_type -> the campaign trend metric whose trajectory gives it context.
+SIGNAL_METRIC = {
+    "cvr_drop": "cvr", "cvr_change": "cvr",
+    "cpa_spike": "cpa", "cpa_change": "cpa",
+    "budget_limited_is": "impression_share", "budget_capped": "impression_share",
+    "budget_limited_is_change": "impression_share", "budget_capped_change": "impression_share",
+    "pmax_low_conv_volume": "cvr", "pmax_low_conv_volume_change": "cvr",
+}
+
+
+def annotate_signals_with_trends(db: Database) -> int:
+    """Phase 2.2 — stamp each campaign-level signal with its metric's 30d trend
+    context. Adds context, never changes whether the signal fired."""
+    trends = {}
+    for acct, camp, metric, win, slope, cls in db.fetchall(
+        "SELECT account_id, campaign_id, metric, window_days, slope, classification "
+        "FROM campaign_trends WHERE window_days IN (7, 30)"
+    ):
+        trends[(acct, camp, metric, win)] = (slope, cls)
+
+    sigs = db.fetchall("SELECT signal_id, signal_type, account_id, campaign_id FROM signals")
+    n = 0
+    for sig_id, stype, acct, camp in sigs:
+        metric = SIGNAL_METRIC.get(stype)
+        ctx, slope30, cls30 = "no trend data", None, ""
+        if metric and camp:
+            t30 = trends.get((acct, camp, metric, 30))
+            t7 = trends.get((acct, camp, metric, 7))
+            if t30:
+                slope30, cls30 = t30
+                if cls30 in ("declining", "falling"):
+                    ctx = "pre-existing decline — the drop may be a continuation, not a new event"
+                elif cls30 == "volatile":
+                    ctx = "this campaign's metric is highly variable — may be normal fluctuation"
+                elif t7 and t7[1] in ("declining", "falling"):
+                    ctx = "was stable over 30d, only recently turning — a new development"
+                else:
+                    ctx = f"30-day trend was {cls30}"
+        db.execute(
+            "UPDATE signals SET trend_context = ?, trend_slope_30d = ?, "
+            "trend_classification_30d = ? WHERE signal_id = ?",
+            [ctx, slope30, cls30, sig_id],
+        )
+        n += 1
+    try:
+        db.execute("CHECKPOINT")
+    except Exception:
+        pass
+    return n
+
+
 def run_trends(db: Database, reset: bool = True) -> int:
     """Compute trends for every campaign with >= MIN_POINTS days, all metrics/windows."""
     db.execute(SCHEMA)

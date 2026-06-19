@@ -117,7 +117,10 @@ CREATE TABLE IF NOT EXISTS signals (
     confidence_tier        TEXT DEFAULT '',
     what_we_know           TEXT DEFAULT '',
     what_we_cant_rule_out  TEXT DEFAULT '',
-    check_next             TEXT DEFAULT ''
+    check_next             TEXT DEFAULT '',
+    trend_context          TEXT DEFAULT '',
+    trend_slope_30d        DOUBLE,
+    trend_classification_30d TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS patterns (
@@ -238,13 +241,20 @@ class Database:
         self.conn.execute(SCHEMA_SQL)
         # Migrate pre-existing DBs to the confidence-framework columns.
         for col in ("confidence_tier", "what_we_know",
-                    "what_we_cant_rule_out", "check_next"):
+                    "what_we_cant_rule_out", "check_next",
+                    "trend_context", "trend_classification_30d"):
             try:
                 self.conn.execute(
                     f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {col} TEXT DEFAULT ''"
                 )
             except Exception:
                 pass
+        try:
+            self.conn.execute(
+                "ALTER TABLE signals ADD COLUMN IF NOT EXISTS trend_slope_30d DOUBLE"
+            )
+        except Exception:
+            pass
         # Migrate episodes to the Phase 1.5 batch/taxonomy/confidence columns.
         _episode_cols = [
             ("campaign_id", "TEXT DEFAULT ''"), ("change_category", "TEXT DEFAULT ''"),

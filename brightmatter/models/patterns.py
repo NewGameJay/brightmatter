@@ -60,6 +60,10 @@ class Signal(BaseModel):
     what_we_know: str = ""             # the factual finding (usually == message)
     what_we_cant_rule_out: str = ""    # alternative explanations we can't eliminate
     check_next: str = ""               # the specific thing for the marketer to verify
+    # Phase 2.2 — temporal context from campaign_trends (set in a post-pass).
+    trend_context: str = ""            # pre-existing decline / new development / normal fluctuation / no trend data
+    trend_slope_30d: Optional[float] = None
+    trend_classification_30d: str = ""
 
 
 class Pattern(BaseModel):

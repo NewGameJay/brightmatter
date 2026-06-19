@@ -43,6 +43,7 @@ class AnalysisEngine:
         # Record signals
         for s in signals:
             self.repo.insert_signal(s)
+        self._annotate_trends()
 
         # Group signals into patterns
         patterns = self.recorder.record_from_signals(signals)
@@ -69,7 +70,17 @@ class AnalysisEngine:
         for s in signals:
             self.repo.insert_signal(s)
         self.recorder.record_from_signals(signals)
+        self._annotate_trends()
         return signals
+
+    def _annotate_trends(self) -> None:
+        """Phase 2.2 — stamp signals with their campaign-trend context. Cheap;
+        falls back to 'no trend data' if campaign_trends isn't computed yet."""
+        try:
+            from brightmatter.analysis.trends import annotate_signals_with_trends
+            annotate_signals_with_trends(self.db)
+        except Exception:
+            logger.exception("Trend annotation skipped")
 
     def audit_account(self, account_id: str) -> dict[str, Any]:
         """Run the Account Auditor agent on a single account."""
