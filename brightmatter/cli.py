@@ -276,6 +276,33 @@ def cmd_bundles(args):
     db.close()
 
 
+def cmd_trends(args):
+    from brightmatter.analysis.trends import run_trends
+
+    db, repo = _setup(args.verbose)
+    if not args.no_recompute:
+        with console.status("Computing rolling trends (OLS, 7/14/30d)…"):
+            n = run_trends(db)
+        console.print(f"  Computed {n} trend rows.\n")
+    table = Table(title="Trend classifications (14-day window)")
+    table.add_column("Metric")
+    for c in ("improving", "declining", "rising", "falling", "stable", "volatile"):
+        table.add_column(c, justify="right")
+    rows = db.fetchdf("""
+        SELECT metric, classification, count(*) n FROM campaign_trends
+        WHERE window_days = 14 GROUP BY 1, 2
+    """)
+    grid: dict[str, dict[str, int]] = {}
+    for i in range(len(rows.get("metric", []))):
+        grid.setdefault(rows["metric"][i], {})[rows["classification"][i]] = rows["n"][i]
+    for metric in ("cpa", "cvr", "ctr", "roas", "impression_share", "cost"):
+        g = grid.get(metric, {})
+        table.add_row(metric, *[str(g.get(c, 0)) for c in
+                                ("improving", "declining", "rising", "falling", "stable", "volatile")])
+    console.print(table)
+    db.close()
+
+
 def cmd_audit(args):
     db, repo = _setup(args.verbose)
     engine = AnalysisEngine(db, repo)
@@ -519,6 +546,9 @@ def main():
     p_bundles = sub.add_parser("bundles", help="Bundle → performance cards (Phase 1.75)")
     p_bundles.add_argument("--min", type=int, default=10, help="Min clean episodes per card")
 
+    p_trends = sub.add_parser("trends", help="Compute/view rolling trends (Phase 2.1)")
+    p_trends.add_argument("--no-recompute", action="store_true", help="View existing, don't recompute")
+
     p_audit = sub.add_parser("audit", help="Deep audit of one account (LLM)")
     p_audit.add_argument("account_id")
 
@@ -539,6 +569,7 @@ def main():
         "patterns": cmd_patterns,
         "episodes": cmd_episodes,
         "bundles": cmd_bundles,
+        "trends": cmd_trends,
         "audit": cmd_audit,
         "validate": cmd_validate,
         "status": cmd_status,
