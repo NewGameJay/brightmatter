@@ -211,8 +211,11 @@ class Repository:
                 pre_metrics_json, post_metrics_json, outcome, outcome_magnitude,
                 outcome_detail, recorded_at, campaign_id, change_category, change_count,
                 actor, confounded, confidence_tier, what_we_know,
-                what_we_cant_rule_out, check_next)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                what_we_cant_rule_out, check_next,
+                trend_adjusted, trend_slope, expected_value, raw_magnitude,
+                adjusted_magnitude, trend_contribution_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?)""",
             (
                 episode.episode_id, episode.account_id, episode.change_event_id,
                 episode.change_description, episode.domain,
@@ -223,6 +226,8 @@ class Repository:
                 episode.actor, episode.confounded,
                 episode.confidence_tier, episode.what_we_know,
                 episode.what_we_cant_rule_out, episode.check_next,
+                episode.trend_adjusted, episode.trend_slope, episode.expected_value,
+                episode.raw_magnitude, episode.adjusted_magnitude, episode.trend_contribution_pct,
             ),
         )
 

@@ -116,7 +116,25 @@ class EpisodeTracker:
             self_confounded = (not b["known"]) and len(b["cats"]) > 1
             confounded = bool(external) or self_confounded
 
-            outcome, magnitude, detail = self._evaluate_outcome(pre, post)
+            outcome, magnitude, detail, metric, pre_val, post_val = self._evaluate_outcome(pre, post)
+
+            # Phase 2.3 — trend-adjust attributable (non-confounded) episodes whose
+            # metric is above a floor (near-$0 CPA / near-0 CVR make % math explode).
+            ta = {"trend_adjusted": False, "trend_slope": 0.0, "expected_value": 0.0,
+                  "raw_magnitude": magnitude, "adjusted_magnitude": magnitude,
+                  "trend_contribution_pct": 0.0}
+            floor = {"cpa": 1.0, "cvr": 0.005}.get(metric, 0.0)
+            if not confounded and metric and pre_val >= floor and post_val >= floor:
+                adj_oc, adj_mag, raw_mag, slope, expected, trend_pct = self._trend_adjust(
+                    b, metric, pre_val, post_val)
+                ta = {"trend_adjusted": True, "trend_slope": slope, "expected_value": expected,
+                      "raw_magnitude": raw_mag, "adjusted_magnitude": adj_mag,
+                      "trend_contribution_pct": trend_pct}
+                if slope and adj_oc != outcome:
+                    detail += (f" → trend-adjusted to {adj_oc.value} "
+                               f"(~{trend_pct:.0%} of the move was pre-existing trend)")
+                outcome, magnitude = adj_oc, adj_mag
+
             if confounded:
                 outcome = EpisodeOutcome.CONFOUNDED
 
@@ -145,6 +163,12 @@ class EpisodeTracker:
                 what_we_know=frame[1],
                 what_we_cant_rule_out=frame[2],
                 check_next=frame[3],
+                trend_adjusted=ta["trend_adjusted"],
+                trend_slope=ta["trend_slope"],
+                expected_value=ta["expected_value"],
+                raw_magnitude=ta["raw_magnitude"],
+                adjusted_magnitude=ta["adjusted_magnitude"],
+                trend_contribution_pct=ta["trend_contribution_pct"],
                 recorded_at=datetime.now(timezone.utc),
             )
             self.repo.insert_episode(ep)
@@ -213,24 +237,86 @@ class EpisodeTracker:
             "roas": round((row[4] or 0) / cost, 2) if cost else 0,
         }
 
-    def _evaluate_outcome(self, pre: dict, post: dict) -> tuple[EpisodeOutcome, float, str]:
+    def _evaluate_outcome(self, pre: dict, post: dict):
+        """Returns (outcome, magnitude, detail, metric, pre_val, post_val).
+        metric/pre_val/post_val identify the primary metric so 2.3 can
+        trend-adjust the same one. metric is None when no outcome is readable."""
         if not pre.get("conversions") or not post.get("conversions"):
-            return EpisodeOutcome.NEUTRAL, 0.0, "Insufficient conversion data to read an outcome"
+            return EpisodeOutcome.NEUTRAL, 0.0, "Insufficient conversion data to read an outcome", None, 0, 0
         pre_cpa, post_cpa = pre.get("cpa", 0), post.get("cpa", 0)
         if pre_cpa and post_cpa:
             d = (post_cpa - pre_cpa) / pre_cpa
-            if d < -0.10:
-                return EpisodeOutcome.IMPROVED, abs(d), f"CPA ${pre_cpa:.0f}→${post_cpa:.0f} ({d:+.0%})"
-            if d > 0.10:
-                return EpisodeOutcome.DEGRADED, abs(d), f"CPA ${pre_cpa:.0f}→${post_cpa:.0f} ({d:+.0%})"
+            detail = f"CPA ${pre_cpa:.0f}→${post_cpa:.0f} ({d:+.0%})"
+            oc = (EpisodeOutcome.IMPROVED if d < -0.10 else
+                  EpisodeOutcome.DEGRADED if d > 0.10 else EpisodeOutcome.NEUTRAL)
+            return oc, abs(d), detail, "cpa", pre_cpa, post_cpa
         pre_cvr, post_cvr = pre.get("cvr", 0), post.get("cvr", 0)
         if pre_cvr and post_cvr:
             d = (post_cvr - pre_cvr) / pre_cvr
-            if d > 0.10:
-                return EpisodeOutcome.IMPROVED, abs(d), f"CVR {pre_cvr:.1%}→{post_cvr:.1%} ({d:+.0%})"
-            if d < -0.10:
-                return EpisodeOutcome.DEGRADED, abs(d), f"CVR {pre_cvr:.1%}→{post_cvr:.1%} ({d:+.0%})"
-        return EpisodeOutcome.NEUTRAL, 0.0, "No material CPA/CVR movement"
+            detail = f"CVR {pre_cvr:.1%}→{post_cvr:.1%} ({d:+.0%})"
+            oc = (EpisodeOutcome.IMPROVED if d > 0.10 else
+                  EpisodeOutcome.DEGRADED if d < -0.10 else EpisodeOutcome.NEUTRAL)
+            return oc, abs(d), detail, "cvr", pre_cvr, post_cvr
+        return EpisodeOutcome.NEUTRAL, 0.0, "No material CPA/CVR movement", None, 0, 0
+
+    def _pre_trend_slope(self, account_id: str, campaign_id: str, metric: str,
+                         change_date: date, lookback: int = 14) -> float:
+        """OLS daily slope of the metric over the `lookback` days before the change
+        — but ONLY if that pre-trend is statistically real (significant and
+        directional). A noisy/flat pre-window returns 0, so we never subtract a
+        trend we don't actually believe (which would amplify noise, not remove it)."""
+        from brightmatter.analysis.trends import compute_trend
+        start = change_date - timedelta(days=lookback)
+        cf = "AND campaign_id = ?" if campaign_id else ""
+        params: list[Any] = [account_id]
+        if campaign_id:
+            params.append(campaign_id)
+        params += [start, change_date]
+        rows = self.db.fetchall(f"""
+            SELECT date, impressions, clicks, cost_micros/1000000.0, conversions, conversion_value
+            FROM daily_metrics WHERE account_id = ? {cf} AND date >= ? AND date < ?
+            ORDER BY date
+        """, params)
+        pts = []
+        for d, imp, clk, cost, conv, val in rows:
+            if metric == "cpa":
+                v = (cost / conv) if conv else None
+            elif metric == "cvr":
+                v = (conv / clk) if clk else None
+            else:
+                v = None
+            if v is not None:
+                pts.append((d, v))
+        if len(pts) < 5:
+            return 0.0
+        t = compute_trend([d for d, _ in pts], [v for _, v in pts], metric)
+        if t is None or t.classification not in ("improving", "declining", "rising", "falling"):
+            return 0.0  # no significant directional pre-trend -> no adjustment
+        return t.slope
+
+    def _trend_adjust(self, b: dict, metric: str, pre_val: float, post_val: float):
+        """Project where the metric would be sans change, isolate the change's
+        contribution. Returns (outcome, adj_mag, raw_mag, slope, expected, trend_pct)."""
+        slope = self._pre_trend_slope(b["acct"], b["cid"], metric, b["cdate"])
+        expected = pre_val + slope * POST_WINDOW_DAYS
+        raw_pct = (post_val - pre_val) / pre_val if pre_val else 0.0
+        adj_pct = (post_val - expected) / pre_val if pre_val else 0.0
+        # Fraction of the raw move explained by the pre-existing trend, clamped to
+        # [0,1] (a trend explaining >100% or reversing the move isn't a clean share).
+        raw_move = post_val - pre_val
+        trend_pct = ((expected - pre_val) / raw_move) if abs(raw_move) > 1e-9 else 0.0
+        trend_pct = max(0.0, min(1.0, trend_pct))
+        fav = -1 if metric == "cpa" else 1   # favorable-direction sign
+        adj_favorable = adj_pct * fav        # >0 = improvement net of trend
+        if abs(adj_pct) < 0.05:
+            oc = EpisodeOutcome.NEUTRAL
+        elif adj_favorable > 0.10:
+            oc = EpisodeOutcome.IMPROVED
+        elif adj_favorable < -0.10:
+            oc = EpisodeOutcome.DEGRADED
+        else:
+            oc = EpisodeOutcome.NEUTRAL
+        return oc, abs(adj_pct), abs(raw_pct), slope, expected, trend_pct
 
     def _confidence(self, b: dict, cat_label: str, scope: str, pre: dict, post: dict,
                     detail: str, external: list[str],

@@ -73,4 +73,12 @@ class Episode(BaseModel):
     what_we_know: str = ""
     what_we_cant_rule_out: str = ""
     check_next: str = ""
+    # Phase 2.3 — trend-adjusted attribution. outcome/outcome_magnitude hold the
+    # ADJUSTED values once adjusted; raw_magnitude preserves the pre-adjustment one.
+    trend_adjusted: bool = False
+    trend_slope: float = 0.0          # pre-change daily slope of the primary metric
+    expected_value: float = 0.0       # where the metric would be at post-window end sans change
+    raw_magnitude: float = 0.0        # |actual - pre| / pre  (pre-adjustment)
+    adjusted_magnitude: float = 0.0   # |actual - expected| / pre  (the change's contribution)
+    trend_contribution_pct: float = 0.0  # share of the raw move explained by pre-existing trend
     recorded_at: Optional[datetime] = None

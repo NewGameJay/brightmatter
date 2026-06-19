@@ -218,7 +218,13 @@ CREATE TABLE IF NOT EXISTS episodes (
     confidence_tier        TEXT DEFAULT '',
     what_we_know           TEXT DEFAULT '',
     what_we_cant_rule_out  TEXT DEFAULT '',
-    check_next             TEXT DEFAULT ''
+    check_next             TEXT DEFAULT '',
+    trend_adjusted         BOOLEAN DEFAULT FALSE,
+    trend_slope            DOUBLE DEFAULT 0,
+    expected_value         DOUBLE DEFAULT 0,
+    raw_magnitude          DOUBLE DEFAULT 0,
+    adjusted_magnitude     DOUBLE DEFAULT 0,
+    trend_contribution_pct DOUBLE DEFAULT 0
 );
 """
 
@@ -262,6 +268,9 @@ class Database:
             ("confounded", "BOOLEAN DEFAULT FALSE"),
             ("confidence_tier", "TEXT DEFAULT ''"), ("what_we_know", "TEXT DEFAULT ''"),
             ("what_we_cant_rule_out", "TEXT DEFAULT ''"), ("check_next", "TEXT DEFAULT ''"),
+            ("trend_adjusted", "BOOLEAN DEFAULT FALSE"), ("trend_slope", "DOUBLE DEFAULT 0"),
+            ("expected_value", "DOUBLE DEFAULT 0"), ("raw_magnitude", "DOUBLE DEFAULT 0"),
+            ("adjusted_magnitude", "DOUBLE DEFAULT 0"), ("trend_contribution_pct", "DOUBLE DEFAULT 0"),
         ]
         for col, decl in _episode_cols:
             try:
