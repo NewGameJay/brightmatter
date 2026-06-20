@@ -311,6 +311,45 @@ CREATE TABLE IF NOT EXISTS segment_comparisons (
     computed_at            TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (segment_id, change_category, actor)
 );
+
+-- ── Phase 4: state-conditioned templates ──
+CREATE TABLE IF NOT EXISTS templates (
+    template_id          TEXT NOT NULL,
+    version              INTEGER NOT NULL,
+    conditions_json      TEXT,
+    level                INTEGER DEFAULT 0,
+    prediction_direction TEXT,
+    prediction_magnitude DOUBLE,
+    magnitude_iqr_low    DOUBLE,
+    magnitude_iqr_high   DOUBLE,
+    n_episodes           INTEGER DEFAULT 0,
+    n_accounts           INTEGER DEFAULT 0,
+    n_folds              INTEGER DEFAULT 0,
+    direction_accuracy   DOUBLE DEFAULT 0,
+    magnitude_mae        DOUBLE DEFAULT 0,
+    status               TEXT DEFAULT '',
+    created_at           TEXT,
+    last_validated       TEXT,
+    retired_at           TEXT,
+    changelog            TEXT,
+    PRIMARY KEY (template_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS template_predictions (
+    template_id          TEXT NOT NULL,
+    template_version     INTEGER DEFAULT 0,
+    episode_id           TEXT,
+    predicted_direction  TEXT,
+    predicted_magnitude  DOUBLE,
+    actual_direction     TEXT,
+    actual_magnitude     DOUBLE,
+    direction_correct    BOOLEAN,
+    magnitude_error      DOUBLE,
+    magnitude_score      TEXT,
+    predicted_at         TIMESTAMP DEFAULT current_timestamp,
+    resolved_at          TIMESTAMP,
+    source               TEXT DEFAULT 'backtest'
+);
 """
 
 
@@ -356,6 +395,9 @@ class Database:
             ("trend_adjusted", "BOOLEAN DEFAULT FALSE"), ("trend_slope", "DOUBLE DEFAULT 0"),
             ("expected_value", "DOUBLE DEFAULT 0"), ("raw_magnitude", "DOUBLE DEFAULT 0"),
             ("adjusted_magnitude", "DOUBLE DEFAULT 0"), ("trend_contribution_pct", "DOUBLE DEFAULT 0"),
+            # Phase 4: pre-change performance state
+            ("pre_state", "TEXT DEFAULT ''"), ("own_cpa_ratio", "DOUBLE DEFAULT 0"),
+            ("bench_cpa_ratio", "DOUBLE DEFAULT 0"),
         ]
         for col, decl in _episode_cols:
             try:
