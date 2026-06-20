@@ -8,6 +8,15 @@ This phase answers: which accounts have usable GA4, what GA4 signals would measu
 improve BrightMatter, and is it worth ingesting — ranked by expected impact and
 grounded in real signal volumes, not narrative.
 
+> **UPDATE 2026-06-20 — access blocker CLEARED.** A fresh OAuth run as
+> **info@hawkemedia.com** (`scripts/ga4_oauth.py`, `analytics.readonly`, minted under
+> the existing Google Ads OAuth client 368000968495) succeeded: **50 GA4 accounts /
+> 230 properties visible.** The token is wired into `.env` (`GA4_REFRESH_TOKEN`,
+> gitignored) and verified to mint + list properties end-to-end. GA4 Phase 2 is now
+> unblocked. The "not operational" findings below were true at first probe and are
+> retained for the record; the remaining Phase-1 deliverable is the precise
+> property→account mapping (URL-based, now runnable).
+
 ---
 
 ## 1.0 Discovery
@@ -136,11 +145,12 @@ upgrades ≥30% of CVR signals, Phase 2 is warranted.
   instrumented; the reach doesn't justify the medium effort yet.
 - **Signals 5, 6 deferred** — diagnostic / cross-channel-future, low immediate value.
 
-**The one hard blocker:** GA4 API access is not operational in this environment.
-Nothing in GA4 Phase 2 (except CrUX) can proceed until the `ai@marketerhire.com` GA4
-OAuth client_id/secret are added to `.env`, or a service account is granted per-
-property Viewer access. **This is the gating action item — a credentials/permissions
-task, not an engineering one.**
+**The one hard blocker — now CLEARED (2026-06-20).** GA4 API access was not
+operational at first probe, but a fresh OAuth as **info@hawkemedia.com** (analytics.
+readonly, under the existing Ads OAuth client) now mints a working token with **230
+properties visible**, wired into `.env`. Signals 1+2 are unblocked for Phase 2, and
+the precise URL-based property→account mapping (the last Phase-1 deliverable) can now
+run. CrUX (Signal 4) remains independently available.
 
 ---
 
@@ -148,16 +158,17 @@ task, not an engineering one.**
 
 | Criterion | Status |
 |---|---|
-| GA4 property → Ads account mapping | ⚠️ partial from existing data (20 linked, 193 URL-match candidates); **live property IDs pending GA4 access** |
-| Data inventory per property | ❌ blocked — needs GA4 API access (documented) |
-| Auth status documented | ✅ adwords-only token 403s; GA4 token client creds absent; 1 property known |
+| GA4 property → Ads account mapping | ⚠️ 230 properties now enumerable (access live); URL-based match is the open task |
+| Data inventory per property | ⚠️ now runnable (access live); not yet pulled (Phase 2) |
+| Auth status documented | ✅ **RESOLVED** — info@hawkemedia.com token live, 230 properties (was: adwords-only 403 / GA4 client creds absent) |
 | Signal ranking with expected impact | ✅ grounded in real volumes (1,130 CVR/CPA, 385 device, 12 ecom) |
 | Measurement framework defined | ✅ confidence upgrades / MAE / rec-quality |
 | Top 3 signals for Phase 2 | ✅ engagement rate, device gap, CrUX page-speed |
 | Honest "is it worth it" assessment | ✅ conditional GO (1+2+4); blocker is credentials, not value |
 
-5 of 7 fully met; the 2 partials are blocked on GA4 API credentials — an external
-provisioning step, documented as the gating action item.
+5 of 7 fully met; the 2 partials are no longer credential-blocked (access went live
+2026-06-20) — they're now straightforward Phase-2 runs (enumerate property streams,
+URL-match to accounts).
 
 ---
 
