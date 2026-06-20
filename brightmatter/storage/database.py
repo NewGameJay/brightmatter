@@ -471,6 +471,20 @@ CREATE TABLE IF NOT EXISTS template_health (
     updated_at                    TIMESTAMP DEFAULT current_timestamp
 );
 
+-- ── GA4 Phase 1 — property -> Ads account mapping (metadata only) ──
+CREATE TABLE IF NOT EXISTS ga4_property_map (
+    account_id     TEXT NOT NULL,
+    account_name   TEXT,
+    account_url    TEXT,
+    ga4_property   TEXT,
+    ga4_name       TEXT,
+    ga4_url        TEXT,
+    match_method   TEXT,          -- url_domain | name_token | unmatched
+    match_confidence TEXT,        -- high | low | none
+    computed_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id)
+);
+
 -- ── Phase 6.75 — per-metric predictions ──
 CREATE TABLE IF NOT EXISTS per_metric_predictions (
     template_id   TEXT NOT NULL,
