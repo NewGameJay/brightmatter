@@ -401,6 +401,32 @@ CREATE TABLE IF NOT EXISTS matched_controls (
     baseline_window_start DATE,
     computed_at           TIMESTAMP DEFAULT current_timestamp
 );
+
+-- ── Phase 4.75 — segment dimensions (window-aggregated per campaign) ──
+CREATE TABLE IF NOT EXISTS campaign_segments (
+    account_id     TEXT NOT NULL,
+    campaign_id    TEXT NOT NULL,
+    dimension      TEXT NOT NULL,   -- device | network | hour | dow | geo
+    segment_value  TEXT NOT NULL,
+    impressions    BIGINT DEFAULT 0,
+    clicks         BIGINT DEFAULT 0,
+    cost_micros    BIGINT DEFAULT 0,
+    conversions    DOUBLE DEFAULT 0,
+    window_start   DATE,
+    window_end     DATE,
+    ingested_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, dimension, segment_value)
+);
+
+CREATE TABLE IF NOT EXISTS ad_strength (
+    account_id    TEXT NOT NULL,
+    campaign_id   TEXT NOT NULL,
+    ad_group_id   TEXT NOT NULL,
+    ad_id         TEXT NOT NULL,
+    ad_strength   TEXT,
+    ingested_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, ad_group_id, ad_id)
+);
 """
 
 

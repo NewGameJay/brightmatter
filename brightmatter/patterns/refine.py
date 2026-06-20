@@ -181,10 +181,15 @@ EXC_MIN_ACCOUNTS = 3
 EXC_ALPHA = 0.05
 
 
-def mine_exceptions(db: Database, episodes: list[dict], top_n: int = 10) -> list[dict]:
+def mine_exceptions(db: Database, episodes: list[dict], top_n: int = 10,
+                    dims: tuple | None = None) -> list[dict]:
     """For the top ACTIVE templates, find dimension-values over-represented among the
     prediction MISSES (Fisher's exact). A cluster of >=10 misses / >=3 accounts on one
-    condition = a conditional exception. Persists template_exceptions."""
+    condition = a conditional exception. Persists template_exceptions.
+
+    dims overrides the default candidate dimensions (e.g. to add Phase-4.75 segment
+    attributes like device_profile / partners_exposed / ad_quality)."""
+    exc_dims = dims if dims is not None else _EXC_DIMENSIONS
     # rebuild template membership keyed the same way Phase 4 does
     tmpl_rows = db.fetchall("""
         SELECT template_id, conditions_json, prediction_direction, level, direction_accuracy, n_episodes
@@ -205,9 +210,11 @@ def mine_exceptions(db: Database, episodes: list[dict], top_n: int = 10) -> list
         misses = [m for m in members if m["direction"] != pred]
         if len(misses) < 5:
             continue
-        for dim in _EXC_DIMENSIONS:
+        for dim in exc_dims:
             if dim in cond:           # already fixed by the template — skip
                 continue
+            if any(dim not in m for m in members):
+                continue              # dimension not populated on these episodes
             values = {m[dim] for m in members}
             for val in values:
                 m_in = sum(1 for m in misses if m[dim] == val)

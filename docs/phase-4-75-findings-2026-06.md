@@ -127,20 +127,40 @@ not a fix for a problem that the 7-day aggregate already addresses.
 
 ---
 
-## Deferred: the 5 new-segment detectors (4.75.2 items 5–9)
+## The 5 new-segment detectors (4.75.2 items 5–9) — built, and the exception null holds
 
-Five of the nine proposed detectors — **device split, search-partners, day/hour,
-geographic outliers, RSA ad-strength** — require **re-ingesting all 210 accounts
-with new GAQL segments**. Device/geo/hour splits in particular multiply
-`daily_metrics` row counts many-fold and are an hours-long, quota-heavy ingestion.
+Per the explicit decision to run the full ingestion, all five segment detectors
+were built. Each dimension was ingested **window-aggregated per campaign** (no
+`segments.date`, so Google aggregates over a 30-day range) into `campaign_segments`
++ `ad_strength` — compact (364K + 942K rows across 223 accounts) and exactly the
+campaign-level profile the episode attributes need, without a daily×segment row
+explosion. (One real gotcha: RSA ad-strength pulled via `ad_group_ad` returns one
+"ad" per product on Shopping accounts — 80,000+ on a single big account, a 50-CPU-
+minute hang — fixed by filtering to `ad.type = RESPONSIVE_SEARCH_AD`.)
 
-Given (a) exception mining returned a clean null at 223 accounts, so adding
-dimensions is speculative, and (b) the act-vs-wait core is complete without them,
-these are **deferred pending an explicit decision** rather than run on spec. They
-are worth doing if the goal shifts to sharper exception mining; they are not on the
-critical path to the advisor. (The four *existing-data* detectors — search-terms
-mining done above, plus conversion-counting / budget-allocation / attribution-model
-checks — are quick follow-ups on data already in hand.)
+**Detectors emitted 7,978 signals:** dead_zone_spend 4,122 · weak_ad_strength
+3,076 · geo_cpa_outlier 385 · device_mobile_drag 385 · search_partners_waste 10.
+These are actionable in their own right (e.g. ~3,000 campaigns where the majority
+of RSAs are Poor/Average strength; ~1,400 campaigns spending materially in
+zero-conversion hour/day windows).
+
+**But the dimensions did NOT unlock conditional exceptions.** Re-running exception
+mining (4.5.2) across the original 7 dimensions **plus** 6 new segment dimensions
+(`device_profile`, `mobile_cvr_drag`, `partners_exposed`, `dead_zones`,
+`geo_variance`, `ad_quality`), attached to 3,621 of 4,185 episodes:
+
+**0 conditional exceptions clear the rigorous bar** (≥10 episodes, ≥3 accounts,
+p<0.05) — and 0 on the new segment dimensions specifically. The closest segment
+candidate (`mobile_cvr_drag` on a `campaign_setting·ecommerce` template, p=0.005)
+sits on only **2 accounts** — the 3-account guard correctly rejects it as a quirk.
+
+So the expensive ingestion answered its question cleanly: **the general state×action
+rules are robust to device / search-partners / day-hour / geographic / ad-strength
+conditioning at 223 accounts.** No non-obvious conditional exception emerges. Either
+the rules genuinely hold across these sub-populations, or 223 accounts is still too
+thin for segment-conditioned exceptions to reach significance — both are honest, and
+distinguishable only with more accounts. The detectors remain valuable as
+standalone signals; they did not (yet) extend the template logic.
 
 ---
 
@@ -150,15 +170,17 @@ checks — are quick follow-ups on data already in hand.)
 |---|---|
 | Matched controls for 30%+ of episodes | ✅ 51% |
 | Matched vs population compared honestly | ✅ (revises 4.5.1) |
-| 9 detectors built | ⚠️ search-terms validated; 4 existing-data quick; **5 segment detectors deferred** (ingestion decision) |
+| 9 detectors built | ✅ 5 segment detectors built (7,978 signals) + search-terms validated; 3 existing-data checks remain quick follow-ups |
 | Search-terms mining on 293K terms | ✅ $352K material waste |
 | Act-vs-wait framework for 10 campaigns | ✅ with do-nothing forecast |
 | Do-nothing forecast in every recommendation | ✅ |
 | Weekly CPA tested | ✅ already weekly; documented |
 | Templates re-categorized do-nothing/don't/act | ✅ 21 / 42 / 13 |
-| Exception mining re-run with new dimensions | ⏸️ pending segment-detector ingestion |
+| Exception mining re-run with new dimensions | ✅ 13 dims total — **0 exceptions clear the bar** (honest null) |
 
-7 of 9 fully met; 2 gated on the segment-detector ingestion decision.
+All major criteria met. The segment ingestion was run in full; it produced 5
+working detectors but **did not** surface new conditional exceptions — a clean,
+documented null rather than a gap.
 
 ---
 
@@ -173,8 +195,9 @@ makes the advisor more honest, not less useful: it now says "either" most of the
 time (correctly) and reserves strong calls for matched, large-cost cases.
 
 **Recommended next:**
-- Decide whether to run the 5 segment-detector ingestion (sharper exception mining)
-  or proceed to Phase 5 operationalization on the current feature set.
+- The segment ingestion is done and answered its question (no new exceptions). The
+  5 detectors stand as useful standalone signals; revisit segment-conditioned
+  exceptions when the account base grows well beyond 223.
 - Phase 5: run the act-vs-wait advisor continuously in shadow mode, scoring
   "we said wait → it reverted" vs "we said don't-act → they acted → it degraded."
 
