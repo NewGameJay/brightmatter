@@ -5,7 +5,7 @@
 ## System health
 - Accounts monitored: **223** · data through **2026-06-18**
 - Episodes: **4889** · live predictions registered: **2342**
-- Template health (live): SHADOW_ONLY 32 · ACTIVE 39 · RETIRED 3
+- Template health (live): SHADOW_ONLY 32 · RETIRED 3 · ACTIVE 39
 - Resolved: 7d **2159** · 14d **1553** · 30d **585** (pending 7d resolution: 183)
 
 ## Accuracy (14-day window — the product metric)

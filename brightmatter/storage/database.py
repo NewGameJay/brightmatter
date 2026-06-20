@@ -470,6 +470,35 @@ CREATE TABLE IF NOT EXISTS template_health (
     drift_flag                    TEXT,
     updated_at                    TIMESTAMP DEFAULT current_timestamp
 );
+
+-- ── Phase 6.75 — per-metric predictions ──
+CREATE TABLE IF NOT EXISTS per_metric_predictions (
+    template_id   TEXT NOT NULL,
+    metric        TEXT NOT NULL,
+    median_delta  DOUBLE,
+    iqr_low       DOUBLE,
+    iqr_high      DOUBLE,
+    mae           DOUBLE,
+    n             INTEGER,
+    computed_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (template_id, metric)
+);
+
+CREATE TABLE IF NOT EXISTS metric_predictions (
+    prediction_id        TEXT PRIMARY KEY,
+    episode_id           TEXT,
+    template_id          TEXT,
+    metric               TEXT,
+    predicted_median     DOUBLE,
+    predicted_iqr_low    DOUBLE,
+    predicted_iqr_high   DOUBLE,
+    actual_delta         DOUBLE,
+    error                DOUBLE,
+    within_iqr           BOOLEAN,
+    resolved             BOOLEAN DEFAULT FALSE,
+    registered_at        DATE,
+    resolved_at          TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
