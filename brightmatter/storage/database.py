@@ -389,6 +389,18 @@ CREATE TABLE IF NOT EXISTS magnitude_convergence (
     running_mae         DOUBLE,
     computed_at         TIMESTAMP DEFAULT current_timestamp
 );
+
+CREATE TABLE IF NOT EXISTS matched_controls (
+    episode_id            TEXT NOT NULL,
+    campaign_id           TEXT,
+    state                 TEXT,
+    action_cpa_change     DOUBLE,
+    no_action_cpa_change  DOUBLE,
+    matched_attribution   DOUBLE,
+    match_quality         TEXT,
+    baseline_window_start DATE,
+    computed_at           TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
