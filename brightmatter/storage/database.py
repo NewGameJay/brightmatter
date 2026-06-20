@@ -332,6 +332,8 @@ CREATE TABLE IF NOT EXISTS templates (
     last_validated       TEXT,
     retired_at           TEXT,
     changelog            TEXT,
+    natural_magnitude              DOUBLE,
+    action_attributable_magnitude  DOUBLE,
     PRIMARY KEY (template_id, version)
 );
 
@@ -349,6 +351,43 @@ CREATE TABLE IF NOT EXISTS template_predictions (
     predicted_at         TIMESTAMP DEFAULT current_timestamp,
     resolved_at          TIMESTAMP,
     source               TEXT DEFAULT 'backtest'
+);
+
+-- ── Phase 4.5 — refinement layers ──
+CREATE TABLE IF NOT EXISTS baseline_observations (
+    account_id      TEXT NOT NULL,
+    campaign_id     TEXT NOT NULL,
+    state           TEXT,
+    window_start    DATE,
+    window_end      DATE,
+    cpa_start       DOUBLE,
+    cpa_end         DOUBLE,
+    cpa_change_pct  DOUBLE,
+    had_action      BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS template_exceptions (
+    template_id          TEXT NOT NULL,
+    exception_dim        TEXT,
+    exception_value      TEXT,
+    n_exception          INTEGER,
+    n_accounts           INTEGER,
+    base_prediction      TEXT,
+    exception_direction  TEXT,
+    exception_magnitude  DOUBLE,
+    p_value              DOUBLE,
+    flips                BOOLEAN,
+    computed_at          TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS magnitude_convergence (
+    template_id         TEXT NOT NULL,
+    observation_number  INTEGER,
+    predicted_magnitude DOUBLE,
+    actual_magnitude    DOUBLE,
+    running_estimate    DOUBLE,
+    running_mae         DOUBLE,
+    computed_at         TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -403,6 +442,14 @@ class Database:
             try:
                 self.conn.execute(
                     f"ALTER TABLE episodes ADD COLUMN IF NOT EXISTS {col} {decl}"
+                )
+            except Exception:
+                pass
+        # Phase 4.5: mean-reversion columns on the template catalog.
+        for col in ("natural_magnitude", "action_attributable_magnitude"):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE templates ADD COLUMN IF NOT EXISTS {col} DOUBLE"
                 )
             except Exception:
                 pass
