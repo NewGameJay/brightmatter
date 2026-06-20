@@ -427,6 +427,49 @@ CREATE TABLE IF NOT EXISTS ad_strength (
     ingested_at   TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (account_id, campaign_id, ad_group_id, ad_id)
 );
+
+-- ── Phase 5 — continuous operation ──
+CREATE TABLE IF NOT EXISTS live_predictions (
+    prediction_id          TEXT PRIMARY KEY,
+    template_id            TEXT NOT NULL,
+    episode_id             TEXT,
+    account_id             TEXT,
+    campaign_id            TEXT,
+    state                  TEXT,
+    predicted_direction    TEXT,
+    predicted_magnitude    DOUBLE,
+    natural_magnitude      DOUBLE,
+    action_cost_predicted  DOUBLE,
+    recommendation         TEXT,
+    registered_at          DATE,
+    source                 TEXT DEFAULT 'live'
+);
+
+CREATE TABLE IF NOT EXISTS prediction_resolutions (
+    prediction_id           TEXT NOT NULL,
+    window_days             INTEGER NOT NULL,
+    actual_magnitude        DOUBLE,
+    actual_direction        TEXT,
+    direction_correct       BOOLEAN,
+    magnitude_error         DOUBLE,
+    magnitude_score         TEXT,
+    actual_action_cost      DOUBLE,
+    recommendation_correct  BOOLEAN,
+    resolved_at             TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (prediction_id, window_days)
+);
+
+CREATE TABLE IF NOT EXISTS template_health (
+    template_id                   TEXT PRIMARY KEY,
+    n_resolved                    INTEGER,
+    live_direction_accuracy       DOUBLE,
+    live_recommendation_accuracy  DOUBLE,
+    magnitude_mae                 DOUBLE,
+    backtest_direction_accuracy   DOUBLE,
+    status                        TEXT,
+    drift_flag                    TEXT,
+    updated_at                    TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
