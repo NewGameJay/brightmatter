@@ -21,6 +21,8 @@ from brightmatter.storage.database import Database
 
 LOW_ENGAGEMENT = 0.40        # paid LP below 40% engagement = poor (benchmarks)
 ENG_DROP_PP = 0.15
+BENCHMARK_ENG = 0.526        # cross-industry median; a "drop" landing above this is benign reversion
+                             # (harness T3 disconfirmed 5/15 engagement_drop signals on exactly this)
 MOBILE_GAP_PP = 0.25
 ADS_SIGNALS = ("cvr_drop", "cvr_change", "cpa_spike", "cpa_change", "device_mobile_drag")
 _TIER_RANK = {"": 0, "SUGGESTIVE": 1, "LIKELY": 2, "CONFIRMED": 3}
@@ -98,9 +100,12 @@ def run_crossref(db: Database) -> dict:
             if e["eng"] is not None and e["eng"] < LOW_ENGAGEMENT:
                 chain = "chain_1_landing_page"; new_tier = "CONFIRMED"
                 note = f"GA4: landing page {page} engagement only {e['eng']*100:.0f}% (paid LP weak)"
-            elif drop >= ENG_DROP_PP:
+            elif drop >= ENG_DROP_PP and e["r_eng"] is not None and e["r_eng"] < BENCHMARK_ENG:
+                # tightened (harness T3): a drop only confirms if it LANDS weak (below
+                # benchmark). A drop from a high baseline that stays healthy is benign.
                 chain = "chain_1_landing_page"; new_tier = "CONFIRMED"
-                note = f"GA4: engagement on {page} fell {drop*100:.0f}pp recently"
+                note = (f"GA4: engagement on {page} fell {drop*100:.0f}pp to {e['r_eng']*100:.0f}% "
+                        f"(below {BENCHMARK_ENG*100:.0f}% benchmark)")
         if not chain:
             continue
         upgraded = _TIER_RANK.get(new_tier, 0) > _TIER_RANK.get(tier, 0)

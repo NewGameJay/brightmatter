@@ -39,6 +39,12 @@ from brightmatter.validation.search_terms_waste import audit_search_terms_waste_
 from brightmatter.validation.vertical_cpa_benchmark import (
     audit_vertical_cpa_benchmark_signals,
 )
+from brightmatter.validation.ga4_detectors import (
+    audit_ga4_engagement_drop_signals,
+    audit_ga4_session_duration_collapse_signals,
+    audit_ga4_mobile_engagement_gap_signals,
+    audit_ga4_mobile_bounce_regression_signals,
+)
 
 # Map detector key → audit function. Each function returns a list of audit
 # objects with a uniform interface: .signal_id, .account_id, .account_name,
@@ -63,6 +69,10 @@ AUDITS = {
     "search_terms_waste":           audit_search_terms_waste_signals,
     "cross_account_outlier":        audit_cross_account_outlier_signals,
     "vertical_cpa_benchmark":       audit_vertical_cpa_benchmark_signals,
+    "ga4_engagement_drop":          audit_ga4_engagement_drop_signals,
+    "ga4_session_duration_collapse": audit_ga4_session_duration_collapse_signals,
+    "ga4_mobile_engagement_gap":    audit_ga4_mobile_engagement_gap_signals,
+    "ga4_mobile_bounce_regression": audit_ga4_mobile_bounce_regression_signals,
 }
 
 __all__ = ["AUDITS"]
