@@ -177,6 +177,43 @@ def detect_mobile_issues(db: Database) -> list[Signal]:
     return out
 
 
+# ── Domain 5.1: paid-vs-organic engagement gap (account level) ──
+
+PAID_ORGANIC_GAP_PP = 0.20   # paid engagement >20pp below organic = targeting/message mismatch
+MIN_CHANNEL_SESS = 200
+
+def detect_traffic_source_gaps(db: Database) -> list[Signal]:
+    rows = db.fetchall(f"""
+        WITH paid AS (
+            SELECT account_id, sessions, engagement_rate FROM ga4_source_engagement
+            WHERE channel='Paid Search' AND sessions >= {MIN_CHANNEL_SESS}
+        ),
+        org AS (
+            SELECT account_id, sessions, engagement_rate FROM ga4_source_engagement
+            WHERE channel='Organic Search' AND sessions >= {MIN_CHANNEL_SESS}
+        )
+        SELECT p.account_id, p.engagement_rate, o.engagement_rate, p.sessions
+        FROM paid p JOIN org o USING (account_id)
+        WHERE o.engagement_rate - p.engagement_rate >= {PAID_ORGANIC_GAP_PP}
+    """)
+    out = []
+    for acct, paid_eng, org_eng, ps in rows:
+        out.append(Signal(
+            signal_id=_id(), account_id=acct, campaign_id="",
+            domain=PatternDomain.LANDING_PAGE, signal_type="ga4_paid_organic_gap",
+            severity=Severity.INFO, value=float(paid_eng), threshold=float(org_eng - PAID_ORGANIC_GAP_PP),
+            message=f"Paid-search engagement {paid_eng*100:.0f}% vs organic {org_eng*100:.0f}% "
+                    f"(gap {(org_eng-paid_eng)*100:.0f}pp) — paid traffic engages worse than organic.",
+            data={"paid_engagement": round(paid_eng,3), "organic_engagement": round(org_eng,3)},
+            detected_at=_now(), confidence_tier="LIKELY",
+            what_we_know="GA4 directly measures channel-segmented engagement.",
+            what_we_cant_rule_out="Whether the paid TARGETING is too broad or the landing pages "
+                                  "served to paid don't match the ad — some gap is expected (paid reaches wider).",
+            check_next="Compare paid landing pages vs organic entry pages; check broad-match expansion.",
+        ))
+    return out
+
+
 def run_ga4_detectors(db: Database) -> list[Signal]:
-    sigs = detect_engagement_drops(db) + detect_mobile_issues(db)
+    sigs = detect_engagement_drops(db) + detect_mobile_issues(db) + detect_traffic_source_gaps(db)
     return sigs

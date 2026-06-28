@@ -185,6 +185,40 @@ def run_filtered_ingestion(db: Database, days: int = 28) -> dict:
     return summary
 
 
+def ingest_source_engagement(db: Database, token: str, pid: str, account_id: str, days: int = 28) -> int:
+    """Channel-group engagement (Domain 5). Low cardinality — no overflow risk."""
+    j = _run_report(token, pid, {
+        "dimensions": [{"name": "sessionDefaultChannelGroup"}],
+        "metrics": [{"name": "sessions"}, {"name": "engagementRate"},
+                    {"name": "bounceRate"}, {"name": "sessionConversionRate"}],
+        "dateRanges": [{"startDate": f"{days}daysAgo", "endDate": "yesterday"}],
+    })
+    params = []
+    for rw in j.get("rows", []):
+        ch = rw["dimensionValues"][0]["value"]
+        m = [x["value"] for x in rw["metricValues"]]
+        params.append((pid, account_id, ch, int(float(m[0])), float(m[1]), float(m[2]), float(m[3])))
+    if params:
+        db.conn.executemany("""INSERT OR REPLACE INTO ga4_source_engagement
+            (ga4_property, account_id, channel, sessions, engagement_rate, bounce_rate, session_cvr)
+            VALUES (?,?,?,?,?,?,?)""", params)
+    return len(params)
+
+
+def run_source_ingestion(db: Database, days: int = 28) -> dict:
+    token = mint_token()
+    targets = db.fetchall("""SELECT account_id, ga4_property FROM ga4_property_map
+                             WHERE match_confidence='high' AND ga4_property IS NOT NULL""")
+    n = rows = 0
+    for acct, pid in targets:
+        try:
+            rows += ingest_source_engagement(db, token, pid, acct, days); n += 1
+        except Exception:
+            pass
+    db.execute("CHECKPOINT")
+    return {"properties": n, "rows": rows}
+
+
 def run_ga4_ingestion(db: Database, days: int = 28, confidence: str = "high") -> dict:
     """Ingest landing-page engagement for the mapped GA4 properties (default: the
     high-confidence matches). Runs the implementation gate first."""

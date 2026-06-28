@@ -513,6 +513,19 @@ CREATE TABLE IF NOT EXISTS campaign_final_urls (
     PRIMARY KEY (account_id, campaign_id, final_url)
 );
 
+-- ── GA4 traffic-source engagement (Domain 5) ──
+CREATE TABLE IF NOT EXISTS ga4_source_engagement (
+    ga4_property     TEXT NOT NULL,
+    account_id       TEXT,
+    channel          TEXT NOT NULL,   -- Paid Search / Organic Search / Direct / ...
+    sessions         INTEGER DEFAULT 0,
+    engagement_rate  DOUBLE DEFAULT 0,
+    bounce_rate      DOUBLE DEFAULT 0,
+    session_cvr      DOUBLE DEFAULT 0,
+    ingested_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (ga4_property, channel)
+);
+
 -- ── GA4 engagement trends (Phase-2-style OLS on landing-page engagement) ──
 CREATE TABLE IF NOT EXISTS ga4_page_trends (
     account_id     TEXT NOT NULL,
