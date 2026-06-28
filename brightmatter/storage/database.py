@@ -485,6 +485,34 @@ CREATE TABLE IF NOT EXISTS ga4_property_map (
     PRIMARY KEY (account_id)
 );
 
+-- ── GA4 x Google Ads cross-platform links (confidence upgrades) ──
+CREATE TABLE IF NOT EXISTS cross_platform_links (
+    signal_id      TEXT NOT NULL,
+    account_id     TEXT,
+    campaign_id    TEXT,
+    signal_type    TEXT,
+    matched_page   TEXT,
+    chain          TEXT,        -- chain_1_landing_page | chain_2_mobile_ux
+    ga4_evidence   TEXT,
+    old_tier       TEXT,
+    new_tier       TEXT,
+    computed_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (signal_id, matched_page)
+);
+
+-- ── Google Ads campaign final URLs (for the GA4<->Ads page join) ──
+CREATE TABLE IF NOT EXISTS campaign_final_urls (
+    account_id    TEXT NOT NULL,
+    campaign_id   TEXT NOT NULL,
+    channel       TEXT,
+    final_url     TEXT NOT NULL,
+    norm_path     TEXT,     -- path only, lowercased, no query/trailing-slash (joins to GA4 landing_page)
+    domain        TEXT,
+    source        TEXT,     -- ad_group_ad | asset_group
+    ingested_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, campaign_id, final_url)
+);
+
 -- ── GA4 ingestion (research/ga4 signal map) ──
 CREATE TABLE IF NOT EXISTS ga4_landing_pages (
     ga4_property      TEXT NOT NULL,
