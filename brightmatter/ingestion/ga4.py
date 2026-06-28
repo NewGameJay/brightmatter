@@ -219,6 +219,48 @@ def run_source_ingestion(db: Database, days: int = 28) -> dict:
     return {"properties": n, "rows": rows}
 
 
+FUNNEL_EVENTS = ["view_item", "add_to_cart", "begin_checkout", "purchase"]
+
+def ingest_funnel_events(db: Database, token: str, pid: str, account_id: str, days: int = 28) -> int:
+    """Ecommerce funnel event counts by date (Domain 3). Event scope."""
+    j = _run_report(token, pid, {
+        "dimensions": [{"name": "eventName"}, {"name": "date"}],
+        "metrics": [{"name": "eventCount"}],
+        "dateRanges": [{"startDate": f"{days}daysAgo", "endDate": "yesterday"}],
+        "dimensionFilter": {"filter": {"fieldName": "eventName",
+                                       "inListFilter": {"values": FUNNEL_EVENTS}}},
+        "limit": 10000,
+    })
+    params = []
+    for rw in j.get("rows", []):
+        ev = rw["dimensionValues"][0]["value"]
+        d = rw["dimensionValues"][1]["value"]
+        dt = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        cnt = int(float(rw["metricValues"][0]["value"]))
+        params.append((pid, account_id, dt, ev, cnt))
+    if params:
+        db.conn.executemany("""INSERT OR REPLACE INTO ga4_funnel_events
+            (ga4_property, account_id, date, event_name, event_count) VALUES (?,?,?,?,?)""", params)
+    return len(params)
+
+
+def run_funnel_ingestion(db: Database, days: int = 28) -> dict:
+    token = mint_token()
+    targets = db.fetchall("""SELECT account_id, ga4_property FROM ga4_property_map
+                             WHERE match_confidence='high' AND ga4_property IS NOT NULL""")
+    n = rows = 0
+    for acct, pid in targets:
+        try:
+            r = ingest_funnel_events(db, token, pid, acct, days)
+            rows += r
+            if r:
+                n += 1
+        except Exception:
+            pass
+    db.execute("CHECKPOINT")
+    return {"properties_with_funnel": n, "rows": rows}
+
+
 def run_ga4_ingestion(db: Database, days: int = 28, confidence: str = "high") -> dict:
     """Ingest landing-page engagement for the mapped GA4 properties (default: the
     high-confidence matches). Runs the implementation gate first."""

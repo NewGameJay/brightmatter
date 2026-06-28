@@ -214,6 +214,67 @@ def detect_traffic_source_gaps(db: Database) -> list[Signal]:
     return out
 
 
+# ── Domain 3: ecommerce funnel step drop-off ──
+
+FUNNEL_STEP_DROP = 0.20      # a step's conversion rate fell >20% recent vs baseline
+FUNNEL_STEPS = [("view_item", "add_to_cart"), ("add_to_cart", "begin_checkout"),
+                ("begin_checkout", "purchase")]
+MIN_STEP_EVENTS = 50
+
+def detect_funnel_dropoff(db: Database) -> list[Signal]:
+    anchor = db.fetchone("SELECT max(date) FROM ga4_funnel_events")[0]
+    if anchor is None:
+        return []
+    rows = db.fetchall(f"""
+        SELECT account_id, event_name,
+               sum(CASE WHEN date > DATE '{anchor}' - {RECENT_DAYS} THEN event_count END) recent,
+               sum(CASE WHEN date <= DATE '{anchor}' - {RECENT_DAYS} THEN event_count END) base
+        FROM ga4_funnel_events
+        WHERE date > DATE '{anchor}' - {RECENT_DAYS + 21}
+        GROUP BY 1,2
+    """)
+    byacct = {}
+    for acct, ev, recent, base in rows:
+        byacct.setdefault(acct, {})[ev] = (recent or 0, base or 0)
+    out = []
+    for acct, ev in byacct.items():
+        def rate(top, bot, w):  # w: 0=recent, 1=base
+            t = ev.get(top, (0, 0))[w]; b = ev.get(bot, (0, 0))[w]
+            return (t / b) if b else None
+        step_changes = {}
+        for upstream, downstream in FUNNEL_STEPS:
+            r = rate(downstream, upstream, 0); b = rate(downstream, upstream, 1)
+            # volume floor on the upstream step (baseline)
+            if b and r is not None and ev.get(upstream, (0, 0))[1] >= MIN_STEP_EVENTS:
+                step_changes[(upstream, downstream)] = (r, b, (b - r) / b if b else 0)
+        if not step_changes:
+            continue
+        # Detector 3.1: one step dropped >20% — flag the worst
+        worst = max(step_changes.items(), key=lambda kv: kv[1][2])
+        (up, down), (r, b, drop) = worst
+        if drop >= FUNNEL_STEP_DROP:
+            # is it isolated (other steps stable)?
+            others = [v[2] for k, v in step_changes.items() if k != (up, down)]
+            isolated = all(o < FUNNEL_STEP_DROP for o in others) if others else True
+            out.append(Signal(
+                signal_id=_id(), account_id=acct, campaign_id="",
+                domain=PatternDomain.LANDING_PAGE, signal_type="ga4_funnel_dropoff",
+                severity=Severity.CRITICAL if down == "purchase" else Severity.WARNING,
+                value=float(r), threshold=float(b * (1 - FUNNEL_STEP_DROP)),
+                message=f"Funnel step {up}->{down} conversion fell {drop*100:.0f}% "
+                        f"({b*100:.0f}%->{r*100:.0f}%)" + (" (isolated step)" if isolated else " (broad)") + ".",
+                data={"step": f"{up}->{down}", "recent_rate": round(r,3), "baseline_rate": round(b,3),
+                      "isolated": isolated},
+                detected_at=_now(), confidence_tier="CONFIRMED" if isolated else "LIKELY",
+                what_we_know="GA4 event counts directly measure funnel step conversion.",
+                what_we_cant_rule_out="What broke the step — product/pricing (cart), checkout friction "
+                                      "(payment/shipping), or a tracking change.",
+                check_next="Inspect that funnel step on the site; check for a deploy/price/checkout change.",
+            ))
+    return out
+
+
 def run_ga4_detectors(db: Database) -> list[Signal]:
-    sigs = detect_engagement_drops(db) + detect_mobile_issues(db) + detect_traffic_source_gaps(db)
+    sigs = (detect_engagement_drops(db) + detect_mobile_issues(db)
+            + detect_traffic_source_gaps(db) + detect_funnel_dropoff(db))
     return sigs

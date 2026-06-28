@@ -13,7 +13,8 @@ from brightmatter.analysis.ga4_detectors import run_ga4_detectors
 
 db = Database(); db.initialize(); repo = Repository(db)
 GA4_TYPES = ("ga4_engagement_drop", "ga4_session_duration_collapse",
-             "ga4_mobile_engagement_gap", "ga4_mobile_bounce_regression")
+             "ga4_mobile_engagement_gap", "ga4_mobile_bounce_regression",
+             "ga4_paid_organic_gap", "ga4_funnel_dropoff")
 db.execute("DELETE FROM signals WHERE signal_type IN " + str(GA4_TYPES))
 
 sigs = run_ga4_detectors(db)
