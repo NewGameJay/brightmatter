@@ -485,6 +485,59 @@ CREATE TABLE IF NOT EXISTS ga4_property_map (
     PRIMARY KEY (account_id)
 );
 
+-- ── GA4 ingestion (research/ga4 signal map) ──
+CREATE TABLE IF NOT EXISTS ga4_landing_pages (
+    ga4_property      TEXT NOT NULL,
+    account_id        TEXT,
+    date              DATE NOT NULL,
+    landing_page      TEXT NOT NULL,   -- normalized path
+    device            TEXT NOT NULL,   -- mobile / desktop / tablet
+    sessions          INTEGER DEFAULT 0,
+    engaged_sessions  INTEGER DEFAULT 0,
+    engagement_rate   DOUBLE DEFAULT 0,
+    bounce_rate       DOUBLE DEFAULT 0,
+    avg_session_duration DOUBLE DEFAULT 0,
+    session_cvr       DOUBLE DEFAULT 0,
+    key_events        DOUBLE DEFAULT 0,
+    revenue           DOUBLE DEFAULT 0,
+    ingested_at       TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (ga4_property, date, landing_page, device)
+);
+
+CREATE TABLE IF NOT EXISTS ga4_property_health (
+    ga4_property      TEXT PRIMARY KEY,
+    account_id        TEXT,
+    overall_engagement_rate DOUBLE,
+    key_events_per_session  DOUBLE,
+    implementation_ok BOOLEAN,         -- false = engagement looks misconfigured (key_event on every view)
+    note              TEXT,
+    checked_at        TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS page_speed (
+    url            TEXT NOT NULL,
+    account_id     TEXT,
+    form_factor    TEXT NOT NULL,      -- PHONE / DESKTOP
+    lcp_ms         DOUBLE,
+    cls            DOUBLE,
+    inp_ms         DOUBLE,
+    lcp_category   TEXT,
+    cls_category   TEXT,
+    inp_category   TEXT,
+    fetched_at     TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (url, form_factor)
+);
+
+CREATE TABLE IF NOT EXISTS ga4_funnel_events (
+    ga4_property   TEXT NOT NULL,
+    account_id     TEXT,
+    date           DATE NOT NULL,
+    event_name     TEXT NOT NULL,      -- view_item / add_to_cart / begin_checkout / purchase
+    event_count    INTEGER DEFAULT 0,
+    ingested_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (ga4_property, date, event_name)
+);
+
 -- ── Phase 6.75 — per-metric predictions ──
 CREATE TABLE IF NOT EXISTS per_metric_predictions (
     template_id   TEXT NOT NULL,
