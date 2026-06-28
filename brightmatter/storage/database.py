@@ -513,6 +513,20 @@ CREATE TABLE IF NOT EXISTS campaign_final_urls (
     PRIMARY KEY (account_id, campaign_id, final_url)
 );
 
+-- ── GA4 engagement trends (Phase-2-style OLS on landing-page engagement) ──
+CREATE TABLE IF NOT EXISTS ga4_page_trends (
+    account_id     TEXT NOT NULL,
+    landing_page   TEXT NOT NULL,
+    n_days         INTEGER,
+    sessions       INTEGER,
+    slope          DOUBLE,      -- engagement-rate change per day
+    p_value        DOUBLE,
+    classification TEXT,        -- improving | declining | stable | volatile
+    current_engagement DOUBLE,
+    computed_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, landing_page)
+);
+
 -- ── GA4 ingestion (research/ga4 signal map) ──
 CREATE TABLE IF NOT EXISTS ga4_landing_pages (
     ga4_property      TEXT NOT NULL,
