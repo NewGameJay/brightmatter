@@ -513,6 +513,21 @@ CREATE TABLE IF NOT EXISTS campaign_final_urls (
     PRIMARY KEY (account_id, campaign_id, final_url)
 );
 
+-- ── squirrelscan page audits (the "why" / cause layer for confirmed-broken pages) ──
+CREATE TABLE IF NOT EXISTS ga4_page_audits (
+    account_id        TEXT,
+    url               TEXT NOT NULL,
+    overall_score     INTEGER,
+    grade             TEXT,
+    mobile_score      INTEGER,
+    performance_score INTEGER,
+    failed_count      INTEGER,
+    warnings_count    INTEGER,
+    top_issues        TEXT,     -- JSON list of the worst rule ids/names
+    audited_at        TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (url)
+);
+
 -- ── GA4 traffic-source engagement (Domain 5) ──
 CREATE TABLE IF NOT EXISTS ga4_source_engagement (
     ga4_property     TEXT NOT NULL,
