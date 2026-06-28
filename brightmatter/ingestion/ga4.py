@@ -125,6 +125,66 @@ def ingest_landing_pages(db: Database, token: str, pid: str, account_id: str, da
     return inserted
 
 
+def ingest_landing_pages_filtered(db: Database, token: str, pid: str, account_id: str,
+                                  paths: list[str], days: int = 28) -> int:
+    """Targeted ingest: pull landingPage engagement for a SPECIFIC list of paths via a
+    dimensionFilter. Filtering keeps cardinality low, so high-traffic properties that
+    otherwise collapse into '(other)' return real per-page data. Batches the path list."""
+    inserted = 0
+    BATCH = 100
+    for i in range(0, len(paths), BATCH):
+        chunk = paths[i:i + BATCH]
+        j = _run_report(token, pid, {
+            "dimensions": [{"name": "landingPage"}, {"name": "deviceCategory"}, {"name": "date"}],
+            "metrics": [{"name": "sessions"}, {"name": "engagedSessions"},
+                        {"name": "engagementRate"}, {"name": "bounceRate"},
+                        {"name": "averageSessionDuration"}, {"name": "sessionConversionRate"},
+                        {"name": "keyEvents"}, {"name": "totalRevenue"}],
+            "dateRanges": [{"startDate": f"{days}daysAgo", "endDate": "yesterday"}],
+            "dimensionFilter": {"filter": {"fieldName": "landingPage",
+                                           "inListFilter": {"values": chunk}}},
+            "limit": 10000,
+        })
+        params = []
+        for rw in j.get("rows", []):
+            d = [x["value"] for x in rw["dimensionValues"]]
+            m = [x["value"] for x in rw["metricValues"]]
+            lp = normalize_path(d[0]); dev = d[1].lower()
+            dt = f"{d[2][:4]}-{d[2][4:6]}-{d[2][6:8]}"
+            params.append((pid, account_id, dt, lp, dev,
+                           int(float(m[0])), int(float(m[1])), float(m[2]), float(m[3]),
+                           float(m[4]), float(m[5]), float(m[6]), float(m[7])))
+        if params:
+            db.conn.executemany("""INSERT OR REPLACE INTO ga4_landing_pages
+                (ga4_property, account_id, date, landing_page, device, sessions, engaged_sessions,
+                 engagement_rate, bounce_rate, avg_session_duration, session_cvr, key_events, revenue)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", params)
+            inserted += len(params)
+    return inserted
+
+
+def run_filtered_ingestion(db: Database, days: int = 28) -> dict:
+    """For each matched account, ingest its campaigns' final-URL paths via filtered
+    queries — recovers pages that cardinality overflow hid on high-traffic properties."""
+    token = mint_token()
+    rows = db.fetchall("""
+        SELECT m.account_id, m.ga4_property, list(DISTINCT f.norm_path)
+        FROM ga4_property_map m JOIN campaign_final_urls f ON f.account_id = m.account_id
+        WHERE m.match_confidence='high' AND m.ga4_property IS NOT NULL AND f.norm_path IS NOT NULL
+        GROUP BY 1,2""")
+    summary = {"accounts": len(rows), "rows": 0, "per_account": []}
+    for acct, pid, paths in rows:
+        paths = [p for p in paths if p]
+        try:
+            n = ingest_landing_pages_filtered(db, token, pid, acct, paths, days)
+        except Exception as e:  # noqa: BLE001
+            summary["per_account"].append((acct, f"ERROR {str(e)[:50]}", 0)); continue
+        summary["rows"] += n
+        summary["per_account"].append((acct, "ok", n))
+    db.execute("CHECKPOINT")
+    return summary
+
+
 def run_ga4_ingestion(db: Database, days: int = 28, confidence: str = "high") -> dict:
     """Ingest landing-page engagement for the mapped GA4 properties (default: the
     high-confidence matches). Runs the implementation gate first."""
