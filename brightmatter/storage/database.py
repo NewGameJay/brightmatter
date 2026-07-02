@@ -485,6 +485,79 @@ CREATE TABLE IF NOT EXISTS ga4_property_map (
     PRIMARY KEY (account_id)
 );
 
+-- ── Verification layer (off-chain trust architecture) ──
+CREATE SEQUENCE IF NOT EXISTS ledger_seq START 1;
+
+CREATE TABLE IF NOT EXISTS prediction_ledger (
+    seq              BIGINT PRIMARY KEY,
+    prediction_id    TEXT NOT NULL UNIQUE,
+    payload          TEXT NOT NULL,        -- full JSON of the prediction, never modified
+    prediction_hash  TEXT NOT NULL,        -- SHA-256 of payload
+    chain_hash       TEXT NOT NULL,        -- SHA-256 of (prev_chain_hash + prediction_hash)
+    created_at       TIMESTAMP NOT NULL,
+    resolved_at      TIMESTAMP,
+    actual_direction TEXT,
+    actual_metrics   TEXT,
+    resolution_hash  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS prediction_provenance (
+    prediction_id    TEXT PRIMARY KEY,
+    template_id      TEXT NOT NULL,
+    template_version INTEGER,
+    template_hash    TEXT,
+    episode_count    INTEGER,
+    episode_ids      TEXT,                 -- JSON array (frozen snapshot)
+    baseline_n       INTEGER,
+    provenance_hash  TEXT NOT NULL,
+    created_at       TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS template_episode_links (
+    template_id      TEXT NOT NULL,
+    template_version INTEGER NOT NULL,
+    episode_id       TEXT NOT NULL,
+    PRIMARY KEY (template_id, template_version, episode_id)
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_checksums (
+    date          DATE NOT NULL,
+    table_name    TEXT NOT NULL,
+    row_count     INTEGER NOT NULL,
+    content_hash  TEXT NOT NULL,
+    previous_hash TEXT,
+    hash_changed  BOOLEAN DEFAULT FALSE,
+    computed_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (date, table_name, computed_at)
+);
+
+CREATE TABLE IF NOT EXISTS template_versions (
+    template_id        TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    conditions_json    TEXT NOT NULL,
+    predictions_json   TEXT NOT NULL,
+    episode_ids_json   TEXT NOT NULL,
+    n_episodes         INTEGER,
+    n_accounts         INTEGER,
+    direction_accuracy DOUBLE,
+    version_hash       TEXT NOT NULL,
+    code_commit        TEXT,
+    extracted_at       TIMESTAMP NOT NULL,
+    retired_at         TIMESTAMP,
+    PRIMARY KEY (template_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS verification_events (
+    event_id       TEXT PRIMARY KEY,
+    event_type     TEXT NOT NULL,     -- drift_alert | data_integrity_fail | chain_break | accuracy_drop | template_demoted | reproducibility_fail
+    severity       TEXT NOT NULL,     -- info | warning | critical
+    details        TEXT NOT NULL,     -- JSON context
+    related_entity TEXT,
+    created_at     TIMESTAMP NOT NULL,
+    resolved_at    TIMESTAMP,
+    resolution     TEXT
+);
+
 -- ── GA4 x Google Ads cross-platform links (confidence upgrades) ──
 CREATE TABLE IF NOT EXISTS cross_platform_links (
     signal_id      TEXT NOT NULL,

@@ -96,6 +96,13 @@ def system_scorecard(db: Database, run_harnesses: bool = False) -> dict:
     sc["per_metric_calibration"] = {m: {"n": n, "mae_pp": round(mae * 100, 1), "within_iqr": round(wi, 2)}
                                     for m, n, mae, wi in mp}
 
+    # ── verification / trust (Component 9) ──
+    try:
+        from brightmatter.verification.health import compute_system_health
+        sc["trust"] = compute_system_health(db)
+    except Exception as e:  # noqa: BLE001
+        sc["trust"] = {"error": str(e)[:60]}
+
     # ── GA4 layer ──
     sc["ga4"] = {
         "detector_signals": dict(db.fetchall("SELECT signal_type, count(*) FROM signals WHERE signal_type LIKE 'ga4_%' GROUP BY 1")),
@@ -108,6 +115,12 @@ def system_scorecard(db: Database, run_harnesses: bool = False) -> dict:
 def print_scorecard(sc: dict) -> None:
     cov = sc["coverage"]
     print(f"\n{'='*64}\nBRIGHTMATTER SYSTEM SCORECARD\n{'='*64}")
+    t = sc.get("trust", {})
+    if "health_score" in t:
+        print(f"TRUST: {t['health_score']}/100 ({t['status']}) · "
+              f"ledger {'OK' if t['checks']['ledger']['ok'] else 'BROKEN'} · "
+              f"reproducible {'OK' if t['checks']['reproducibility']['ok'] else 'FAIL'} · "
+              f"{t['checks']['active_drift_alerts']} drift alerts")
     print(f"Coverage: {cov['accounts_with_metrics']} accounts · {cov['campaigns']} campaigns · "
           f"{cov['episodes']} episodes · {cov['ga4_accounts']} GA4 accounts · {cov['date_range'][0]}→{cov['date_range'][1]}")
     print(f"\n[1] SIGNALS: {sc['signals']['total']} | tiers {sc['signals']['by_tier']}")
